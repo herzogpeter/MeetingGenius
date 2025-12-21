@@ -50,6 +50,26 @@ VITE_WS_URL=ws://localhost:8000/ws npm run dev
 ./dev.sh
 ```
 
+## Automated smoke test (repeatable “wow moments”)
+
+With the backend running, run:
+
+```bash
+python smoke_ws.py
+```
+
+To override the WebSocket URL or timeout:
+
+```bash
+MEETINGGENIUS_WS_URL=ws://localhost:8000/ws MEETINGGENIUS_SMOKE_TIMEOUT_S=180 python smoke_ws.py
+```
+
+If you see `missing dependency 'websockets'`, install it in your venv:
+
+```bash
+python -m pip install websockets
+```
+
 ## Demo script (exact phrases + expected outcomes)
 
 In the web UI, use the left “Transcript” panel.
