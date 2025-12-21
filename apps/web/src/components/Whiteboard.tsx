@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import type { BoardState, Card, Rect } from '../contracts'
 import { ChartCardView } from './cards/ChartCardView'
 import { ListCardView } from './cards/ListCardView'
+import { recordCardDismissed, recordCardRectChanged } from '../telemetry/sessionTelemetry'
 
 const DEFAULT_RECT: Omit<Rect, 'x' | 'y'> = { w: 420, h: 280 }
 
@@ -30,16 +31,6 @@ export function Whiteboard(props: {
   onDismiss: (cardId: string) => void
 }) {
   const [localRects, setLocalRects] = useState<Record<string, Rect>>({})
-
-  useEffect(() => {
-    setLocalRects((prev) => {
-      const next: Record<string, Rect> = { ...prev }
-      for (const id of Object.keys(next)) {
-        if (!props.boardState.cards?.[id]) delete next[id]
-      }
-      return next
-    })
-  }, [props.boardState.cards])
 
   const cards = useMemo(() => Object.values(props.boardState.cards ?? {}), [props.boardState.cards])
   const visibleCards = useMemo(
@@ -72,6 +63,11 @@ export function Whiteboard(props: {
               minWidth={260}
               minHeight={180}
               onDragStop={(_, data) => {
+                recordCardRectChanged({
+                  interaction: 'drag',
+                  cardId: card.card_id,
+                  rect: { ...rect, x: data.x, y: data.y },
+                })
                 setLocalRects((prev) => {
                   const existing = prev[card.card_id] ?? serverRect ?? autoPlaceRect(idx)
                   return {
@@ -83,6 +79,11 @@ export function Whiteboard(props: {
               onResizeStop={(_, __, ref, ___, position) => {
                 const width = ref.offsetWidth
                 const height = ref.offsetHeight
+                recordCardRectChanged({
+                  interaction: 'resize',
+                  cardId: card.card_id,
+                  rect: { x: position.x, y: position.y, w: width, h: height },
+                })
                 setLocalRects((prev) => ({
                   ...prev,
                   [card.card_id]: { x: position.x, y: position.y, w: width, h: height },
@@ -98,6 +99,7 @@ export function Whiteboard(props: {
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation()
+                      recordCardDismissed(card.card_id)
                       props.onDismiss(card.card_id)
                     }}
                   >

@@ -26,6 +26,18 @@
   gap: 10px;
 }
 
+.mgHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mgButton--small {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
 .mgMain {
   flex: 1;
   display: flex;
