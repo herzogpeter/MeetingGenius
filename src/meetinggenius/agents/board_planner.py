@@ -20,6 +20,7 @@ You convert orchestrator proposals and research results into concrete BoardActio
 
 Rules:
 - Prefer updating existing cards (same topic) over creating new ones.
+- Prefer `update_card` over `create_card` unless it's truly a new topic (creates may be throttled/de-duped by the backend).
 - Never create a chart/list that implies factual data without citations.
 - Include citations in created cards via card.sources and in updates via citations when relevant.
 - Output must be a list of BoardAction objects (schema validated).

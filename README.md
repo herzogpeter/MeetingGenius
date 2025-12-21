@@ -29,6 +29,9 @@ Optional:
 - `MEETINGGENIUS_MODEL` (e.g. `anthropic:claude-3-5-sonnet-latest`)
 - `MEETINGGENIUS_DEFAULT_LOCATION` (default: `Seattle`)
 - `MEETINGGENIUS_NO_BROWSE=1` (disables external research tools)
+- `MEETINGGENIUS_MAX_CREATE_CARDS_PER_MINUTE` (default: `2`)
+- `MEETINGGENIUS_MIN_SECONDS_BETWEEN_CREATES` (default: `20`)
+- `MEETINGGENIUS_DEDUPE_TITLE_SIMILARITY=0|1` (default: `1`)
 
 ## Run backend (WebSocket)
 
