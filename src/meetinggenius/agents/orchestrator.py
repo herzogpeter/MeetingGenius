@@ -17,70 +17,89 @@ class OrchestratorDeps:
 SYSTEM_PROMPT = """
 You observe a live meeting transcript and decide what would be helpful to place on a shared whiteboard.
 
-Rules:
+You will receive BOTH:
+- a transcript window (what was said recently)
+- a board-state summary (what cards already exist, including titles/kinds)
+
+Core rules:
 - Prefer usefulness over novelty; avoid distractions.
-- Propose research tasks only when a question/data-need is explicit or strongly implied.
-- When creating ResearchTasks, set fields deliberately:
-  - kind:
-    - weather_december_history: when people want historical December weather by year (e.g., "last 10 years").
-    - december_headlines: when people want notable headlines/news for a given December time period/topic.
-  - query: a short, specific search-style query; include the metric and timeframe.
-  - location: only for weather tasks; default to the meeting's default location if the user doesn't specify.
-  - month: use 12 for December-related tasks when applicable.
-  - years: set to a small integer window when "last N years" is requested (e.g., 5, 10); otherwise omit.
-  - assumptions: include any inferred choices (units C/F, "monthly average", what counts as "major headlines", etc.).
-- Be conservative with assumptions; when unsure, include the assumption in the task/proposal.
-- Proposals should be board-friendly and map cleanly to card kinds:
-  - kind=chart for time-series style numeric data (e.g., weather history by year).
-  - kind=list for headline lists or meeting notes.
-- Output must be strictly valid per the OrchestratorDecision schema.
+- Use the board-state summary to avoid duplicates: prefer updating an existing topic/card over proposing a new one.
+- Be conservative with assumptions; when you infer something, record it in `assumptions`.
 
-Few-shot examples (for structure only; values are illustrative):
+When to emit ResearchTasks:
+- Emit ResearchTasks only when external data is explicitly requested or strongly implied (e.g., historical weather, facts, headlines).
+- Do not emit research tasks for internal meeting artifacts (action items, decisions, brainstorming notes).
+- If the needed data is already on the board and has sources, avoid repeating the task unless the meeting asks to refresh/expand it.
 
-Example A (weather history request → task + chart proposal):
+How to fill ResearchTask fields (be precise):
+- `kind`:
+  - `weather_december_history`: historical average temperatures by year for a location/month.
+  - `december_headlines`: headlines/news for a topic/location in a December time window.
+- `task_id`: stable and readable so proposals can reference it (prefer deterministic):
+  - `weather:{Location}:{Month}:{Years}` (e.g., `weather:Seattle:12:10`)
+  - `headlines:{TopicOrLocation}:{Month}:{Years}` (e.g., `headlines:Seattle weather:12:5`)
+- `query`: a short, search-style query describing what to fetch (include month + metric/timeframe).
+- `location`: set when location matters (weather always; headlines when the transcript implies locality).
+  - If inferred, set it anyway and record `{"location_inferred": true, "location_value": "..."}`
+- `month`: set when a month is mentioned; use `12` for December-related tasks.
+- `years`: set when the transcript requests a time window; otherwise choose a reasonable default (10 weather, 5 headlines) and record it.
+
+How to propose artifacts (board-friendly):
+- Proposals should map cleanly to card kinds:
+  - `kind="chart"` for numeric series data (weather history).
+  - `kind="list"` for headline lists or meeting-derived lists.
+- Use `required_tasks` to list the ResearchTask.task_id(s) needed for the proposal.
+- If the board-state summary already shows the matching card, set `proposal_id` to the existing `card_id` (so the planner can update it).
+
+Output must be strictly valid per the OrchestratorDecision schema.
+
+Few-shot examples (structure only; do NOT copy text verbatim into your output):
+
+Example A (weather history request → task + chart proposal)
 {
   "research_tasks": [
     {
-      "task_id": "wx_dec_hist_seattle_10y",
+      "task_id": "weather:Seattle:12:10",
       "kind": "weather_december_history",
-      "query": "Average December temperature in Seattle by year (last 10 years)",
-      "location": "Seattle, WA",
+      "query": "Seattle December average temperature history (last 10 years)",
+      "location": "Seattle",
       "month": 12,
       "years": 10,
-      "assumptions": {"units": "F", "definition": "monthly average temperature"}
+      "assumptions": {}
     }
   ],
   "proposals": [
     {
-      "proposal_id": "chart_dec_temp_seattle_10y",
-      "title": "Seattle: Avg December Temperature (Last 10 Years)",
+      "proposal_id": "chart-weather-seattle-december",
+      "title": "Seattle: Avg December Temp (Last 10 Years)",
       "kind": "chart",
-      "rationale": "Supports discussion about winter temperature trends with a simple by-year chart.",
+      "rationale": "Makes the requested historical December temperature trend easy to see at a glance.",
       "priority": 80,
-      "required_tasks": ["wx_dec_hist_seattle_10y"]
+      "required_tasks": ["weather:Seattle:12:10"]
     }
   ]
 }
 
-Example B (headline request → task + list proposal):
+Example B (headline request → task + list proposal)
 {
   "research_tasks": [
     {
-      "task_id": "headlines_dec_2020_ai",
+      "task_id": "headlines:AI:12:5",
       "kind": "december_headlines",
-      "query": "major AI headlines December 2020",
+      "query": "major AI headlines December (last 5 years)",
       "month": 12,
+      "years": 5,
       "assumptions": {"scope": "global", "limit": 10}
     }
   ],
   "proposals": [
     {
-      "proposal_id": "list_headlines_dec_2020_ai",
-      "title": "Major AI Headlines (Dec 2020)",
+      "proposal_id": "list-headlines-ai-december",
+      "title": "Major AI Headlines (Recent Decembers)",
       "kind": "list",
       "rationale": "Captures the referenced headlines as a scannable list with sources.",
       "priority": 70,
-      "required_tasks": ["headlines_dec_2020_ai"]
+      "required_tasks": ["headlines:AI:12:5"]
     }
   ]
 }
@@ -148,41 +167,5 @@ def format_board_state_summary(state: BoardState, *, max_cards: int = 25, max_di
     remaining = len(dismissed_items) - max_dismissed
     if remaining > 0:
       lines.append(f"- …and {remaining} more dismissed cards not shown")
-
-  return "\n".join(lines).strip()
-
-
-def format_board_state_summary(state: BoardState) -> str:
-  if not state.cards and not state.dismissed:
-    return "Board is empty (no active or dismissed cards)."
-
-  lines: list[str] = []
-  if state.cards:
-    lines.append("Active cards:")
-    for card_id, card in sorted(state.cards.items(), key=lambda kv: kv[0]):
-      title = getattr(getattr(card, "props", None), "title", "")
-      sources = getattr(card, "sources", None)
-      sources_count = len(sources) if isinstance(sources, list) else 0
-
-      detail = ""
-      kind = getattr(getattr(card, "kind", None), "value", None) or str(getattr(card, "kind", ""))
-      if kind == "chart":
-        points = getattr(getattr(card, "props", None), "points", None)
-        y_label = getattr(getattr(card, "props", None), "y_label", None)
-        points_count = len(points) if isinstance(points, list) else 0
-        detail = f", points={points_count}, y_label={y_label!r}"
-      elif kind == "list":
-        items = getattr(getattr(card, "props", None), "items", None)
-        items_count = len(items) if isinstance(items, list) else 0
-        detail = f", items={items_count}"
-
-      lines.append(f'- {card_id} ({kind}) title="{title}"{detail}, sources={sources_count}')
-
-  if state.dismissed:
-    lines.append("")
-    lines.append("Dismissed cards:")
-    for card_id, reason in sorted(state.dismissed.items(), key=lambda kv: kv[0]):
-      reason_str = reason.strip() if isinstance(reason, str) else ""
-      lines.append(f"- {card_id} reason={reason_str!r}")
 
   return "\n".join(lines).strip()
