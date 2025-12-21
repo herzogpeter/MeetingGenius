@@ -1,0 +1,76 @@
+What makes this valuable in a real meeting
+
+Right info, right moment, low distraction: The whiteboard must improve shared understanding without derailing conversation. Think “glanceable artifacts” that appear, update, and get out of the way.
+Artifacts meetings actually need (default set): live agenda + current topic, decision log, open questions/assumptions, action items (owner/date), risks/unknowns, “parking lot”, key numbers/tables, quick comparisons, 1–2 charts max per topic.
+Non-annoying behavior (critical requirements):
+Rate-limit updates (e.g., no more than 1–2 new items/minute unless explicitly asked).
+Prefer draft cards with assumptions (“Assumed location: Seattle; tap to change”) over interrupting with questions.
+Always show provenance: source links, timestamp, and what was assumed/inferred.
+Let users pin/lock/merge/dismiss cards; otherwise the board becomes spam.
+Truthfulness/grounding requirements (or it will be rejected fast):
+Separate “LLM-generated wording” from “retrieved data”; no chart without a cited dataset.
+Confidence + “why this is relevant” per card.
+A “do not browse / internal-only” mode for sensitive meetings; clear retention controls and consent UX.
+What you can learn from tambo-ai/tambo (and how it maps)
+
+Tambo’s core pattern is: register UI components + strict prop schemas (Zod/JSON Schema), then let the model decide which component(s) to render via UI tool calls (show_component_*) and gather data via informational tool calls first.
+This is a strong fit for your whiteboard if you treat “render a card” as a tool call with a schema like:
+create_card({id,type,title,data,sources,layoutHint})
+update_card({id,patch})
+move_resize_card({id,x,y,w,h})
+Key takeaway: don’t have “UI-generating agents” output arbitrary React. Instead, constrain generation to choosing from a component registry + filling schema-validated props. That’s how you keep it stable, safe, and testable.
+Architecture critique of your proposal (what to change)
+
+Your split (meeting supervisor → researchers → whiteboard supervisor → UI agents) is directionally right, but too many free-running agents will create:
+inconsistent board state (“two agents update same card differently”),
+higher latency/cost (parallel browsing + re-render loops),
+harder debuggability (no single accountable planner).
+A more reliable architecture is event-driven + a typed intermediate representation:
+Streaming STT → transcript events (with timestamps + speaker when possible).
+Meeting Orchestrator (planner) maintains a compact meeting state (topic, decisions, open questions, “user asked for data”, etc.) and emits structured intents:
+ArtifactProposal (e.g., “needs a temperature trend chart”)
+ResearchTask (e.g., “fetch Dec temps 2015–2024 for inferred location”)
+Research Service (workers) executes tasks via tool connectors (weather/news/internal docs), returns data + citations.
+Board Planner converts proposals + data into BoardActions (create/update/move cards) and calls board tools.
+Renderer is deterministic (React/canvas): given BoardState, it renders cards.
+Keep “agents” conceptually, but implement most as bounded modules (planner + workers) with strict schemas and a single source of truth: BoardState.
+Open-source / frameworks that accelerate the build
+
+Generative UI / tool-to-component frameworks: @tambo-ai/react (component registry + schemas + tool loop), Vercel AI SDK (streaming + tool calls), CopilotKit (agentic UI patterns).
+Whiteboard/canvas: tldraw (best-in-class extensible canvas), Excalidraw (simpler), Konva/Fabric (lower-level).
+Realtime audio + meetings: LiveKit / Daily (capture + streaming), WebRTC.
+STT: Whisper/faster-whisper (self-host), Deepgram, OpenAI Realtime (lowest-latency “feels live”).
+Orchestration/workflows: LangGraph (agent graphs), Temporal (durable workflows), BullMQ (queues).
+Collaboration/state: Yjs or Liveblocks (shared board state).
+Charts/tables: Vega-Lite, ECharts, Recharts; Markdown→rich blocks for quick wins.
+Rapid prototype plan (prove feasibility + value fast)
+
+Pick 2 “wow” meeting scenarios (don’t boil the ocean):
+Scenario A: “local temperature trends in December” → chart card + assumptions UI.
+Scenario B: “weather headlines in December over 5 years” → bullet list card + sources.
+Build the whiteboard shell (Week 1):
+Canvas (tldraw recommended) + draggable/resizable “cards”.
+Card types: ChartCard, ListCard, TableCard, ChecklistCard, FAQCard (start with 2–3).
+BoardState store + basic layout (simple grid/pack; no fancy layout yet).
+Add live transcript (Week 1):
+Mic capture → streaming STT → transcript panel.
+Emit transcript chunks to backend with timestamps.
+Implement the “planner loop” (Week 2):
+A single orchestrator that watches transcript windows (e.g., last 30–90s) and emits ResearchTask or BoardAction only when high confidence + high utility.
+Hard limits: max tasks/minute, max cards/topic, dedupe by semantic match.
+Add 2 real data connectors (Week 2):
+Weather historical temps (e.g., Open-Meteo/Meteostat/NOAA depending on your tolerance for setup).
+Headlines (e.g., GDELT is often easiest for prototypes).
+Cache results; always attach citations/URLs.
+Render via schema-constrained UI actions (Week 2–3):
+Use the Tambo-style approach: component registry + JSON/Zod schemas + tool calls for create/update/move.
+Validate every action against schema; reject/repair invalid actions.
+User test in real meetings (end of Week 3):
+5–10 sessions, measure: “did it help us decide faster / remember better / reduce note-taking?”
+Track: dismiss rate, pin rate, corrections (“wrong location”), and latency to first useful artifact.
+Success criteria (clear go/no-go):
+Time-to-first-useful-card < 60s.
+≥70% of sessions pin at least one card.
+<10% of cards dismissed as “noise”.
+No chart without a cited source; users trust it.
+If you tell me your target meeting type (sales calls, eng standups, product planning, brainstorms) and whether you want cloud-only or “privacy-first/on-device”, I can tighten the prototype scope and propose the exact component/tool schemas to implement first.

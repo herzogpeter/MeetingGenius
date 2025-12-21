@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meetinggenius"
+version = "0.0.1"
+description = "AI-powered meeting whiteboard prototype (PydanticAI)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.7.0",
+  "pydantic-ai-slim[openai,anthropic]>=1.37.0",
+  "httpx>=0.27.0",
+  "python-dotenv>=1.0.1",
+  "fastapi>=0.110.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+meetinggenius = "meetinggenius.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
