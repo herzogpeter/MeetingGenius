@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import traceback
@@ -191,26 +192,44 @@ class AIRunner:
       from meetinggenius.agents.orchestrator import (
         OrchestratorDeps,
         build_orchestrator_agent,
+        format_board_state_summary,
         format_transcript_window,
       )
     except ModuleNotFoundError as e:
       raise ModuleNotFoundError("Missing AI dependencies; run: `python -m pip install -e .`") from e
 
     transcript_window = format_transcript_window(events)
+    board_summary = format_board_state_summary(board_state)
     orchestrator = build_orchestrator_agent(model)
     orchestrator_deps = OrchestratorDeps(
       policy=policy,
       default_location=default_location,
       board_state=board_state,
     )
+    orchestrator_prompt = "\n".join(
+      [
+        "Meeting transcript window:",
+        transcript_window,
+        "",
+        "Current board state:",
+        board_summary,
+        "",
+        f"Default location: {default_location}",
+        f"External browsing/research enabled: {not no_browse}",
+        "",
+        "Return a valid OrchestratorDecision for this context.",
+      ]
+    ).strip()
     decision = await asyncio.to_thread(
-      lambda: orchestrator.run_sync(transcript_window, deps=orchestrator_deps).output
+      lambda: orchestrator.run_sync(orchestrator_prompt, deps=orchestrator_deps).output
     )
 
     tasks = decision.research_tasks
     if not tasks:
       combined_text = "\n".join(e.text for e in events if e.text)
       tasks = auto_seed_research_tasks(combined_text, default_location=default_location)
+      if tasks:
+        decision = decision.model_copy(update={"research_tasks": tasks})
 
     results = []
     if tasks:
@@ -230,8 +249,25 @@ class AIRunner:
       orchestrator_decision=decision,
       research_results=results,
     )
+    planner_prompt = "\n".join(
+      [
+        "Meeting transcript window:",
+        transcript_window,
+        "",
+        "Current board state:",
+        board_summary,
+        "",
+        "Orchestrator decision (JSON):",
+        decision.model_dump_json(indent=2),
+        "",
+        "Research results (JSON):",
+        json.dumps([r.model_dump(mode="json") for r in results], indent=2),
+      ]
+    ).strip()
+    if no_browse:
+      planner_prompt += "\n\nNote: external research is disabled; avoid creating factual external-data cards."
     actions = await asyncio.to_thread(
-      lambda: planner.run_sync("Generate board actions for the current meeting context.", deps=planner_deps).output
+      lambda: planner.run_sync(planner_prompt, deps=planner_deps).output
     )
 
     next_state = await self._state.apply_board_actions(expected_version=version, actions=actions)
