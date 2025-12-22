@@ -71,18 +71,12 @@ def _meeting_native_seed_actions(board_state: BoardState, actions: list[BoardAct
   if board_state.cards:
     return []
 
-  meeting_native_referenced = any(
-    (isinstance(action, UpdateCardAction) and action.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS)
-    or (isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS)
-    for action in actions
-  )
-  if not meeting_native_referenced:
-    return []
-
   create_ids = {action.card.card_id for action in actions if isinstance(action, CreateCardAction)}
   seeded: list[CreateCardAction] = []
   for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
     if card_id in create_ids:
+      continue
+    if card_id in board_state.dismissed:
       continue
     seeded.append(
       CreateCardAction(
@@ -502,11 +496,14 @@ class AIRunner:
     )
 
     seed_actions = _meeting_native_seed_actions(board_state, actions)
+    post_process_state = board_state
     if seed_actions:
       actions = seed_actions + actions
+      for action in seed_actions:
+        post_process_state = apply_action(post_process_state, action)
 
     processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
-      board_state, actions
+      post_process_state, actions
     )
 
     if no_browse:
