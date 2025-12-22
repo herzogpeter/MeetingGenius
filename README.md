@@ -104,8 +104,21 @@ VITE_WS_URL=ws://localhost:8000/ws npm run dev
 ## Optional: run both (demo)
 
 ```bash
-./dev.sh
+./demo.sh
 ```
+
+This starts both services (backend on `http://localhost:8000`, frontend on `http://localhost:5173`) and prints the demo steps + prompts.
+
+Notes:
+
+- In the web UI header, use the `External research` toggle (On/Off). For data-backed cards (weather/news), keep it `On`.
+- `Run AI now` forces a run using the current transcript window (useful if you tweak assumptions or want to re-run without sending a new message).
+
+Demo prompts:
+
+- Standup: `Summarize today's standup into 3 wins, 3 blockers, and 3 next steps.`
+- Planning: `Turn our planning discussion into a prioritized backlog with owners and rough estimates.`
+- Sales call: `Extract buyer pain points, objections, and next steps from this sales call.`
 
 ## Run a quick simulation
 
