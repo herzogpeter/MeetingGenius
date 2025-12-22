@@ -68,6 +68,7 @@ export type OutgoingMessage =
   | { type: 'transcript_event'; event: TranscriptEvent }
   | { type: 'set_session_context'; default_location: string }
   | { type: 'client_board_action'; action: unknown }
+  | { type: 'run_ai' }
   | { type: 'reset' }
 
 export type IncomingBoardActionsMessage = {

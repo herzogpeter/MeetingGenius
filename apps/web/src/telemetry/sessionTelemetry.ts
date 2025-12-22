@@ -53,6 +53,10 @@ type SessionTelemetryEvent =
       years: number
       last_event?: { timestamp: string; speaker: string | null; text_preview: string }
     }
+  | {
+      type: 'run_ai_clicked'
+      ts: string
+    }
 
 export type SessionTelemetryExport = {
   session_id: string
@@ -199,4 +203,8 @@ export function recordRefreshLastRequestClicked(args: {
       ? { timestamp: args.lastEvent.timestamp, speaker: args.lastEvent.speaker, text_preview: textPreview ?? '' }
       : undefined,
   })
+}
+
+export function recordRunAiClicked(): void {
+  pushEvent({ type: 'run_ai_clicked', ts: nowIso() })
 }

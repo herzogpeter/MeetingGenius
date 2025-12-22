@@ -9,6 +9,7 @@ import {
   downloadSessionTelemetryJson,
   recordAssumptionsChanged,
   recordRefreshLastRequestClicked,
+  recordRunAiClicked,
 } from './telemetry/sessionTelemetry'
 
 const YEARS_STORAGE_KEY = 'mg.assumptions.years'
@@ -45,6 +46,7 @@ function App() {
     boardState,
     sendTranscriptEvent,
     sendSessionContext,
+    sendRunAi,
     sendClientBoardAction,
     sendReset,
   } = useBoardSocket()
@@ -125,6 +127,12 @@ function App() {
     showClientStatus('Refreshed last request')
   }
 
+  const runAiNow = () => {
+    if (connectionState !== 'open') return
+    recordRunAiClicked()
+    sendRunAi()
+  }
+
   return (
     <div className="mgApp">
       <header className="mgHeader">
@@ -134,6 +142,9 @@ function App() {
             <div className={`mgPill mgPill--${connectionState}`}>WS: {connectionState}</div>
             {statusMessage ? <div className="mgStatus">{statusMessage}</div> : null}
             <div className="mgHeaderActions">
+              <button className="mgButton mgButton--small" disabled={connectionState !== 'open'} onClick={runAiNow}>
+                Run AI now
+              </button>
               <button className="mgButton mgButton--small" onClick={downloadSessionTelemetryJson}>
                 Export session JSON
               </button>
