@@ -16,7 +16,7 @@ export function useBoardSocket(): {
   lastStatusMessage: string | null
   boardState: BoardState
   sendTranscriptEvent: (event: TranscriptEvent) => void
-  sendSessionContext: (defaultLocation: string) => boolean
+  sendSessionContext: (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) => boolean
   sendClientBoardAction: (action: unknown) => void
   sendReset: () => void
 } {
@@ -45,7 +45,14 @@ export function useBoardSocket(): {
   )
 
   const sendSessionContext = useCallback(
-    (defaultLocation: string) => sendMessage({ type: 'set_session_context', default_location: defaultLocation }),
+    (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) =>
+      sendMessage({
+        type: 'set_session_context',
+        default_location: args.defaultLocation,
+        no_browse: args.noBrowse,
+        years: args.years,
+        month: args.month,
+      }),
     [sendMessage],
   )
 
