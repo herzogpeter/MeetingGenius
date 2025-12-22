@@ -54,19 +54,32 @@ When to emit ResearchTasks:
 - Emit ResearchTasks only when external data is explicitly requested or strongly implied (e.g., historical weather, facts, headlines).
 - Do not emit research tasks for internal meeting artifacts (action items, decisions, brainstorming notes).
 - If the needed data is already on the board and has sources, avoid repeating the task unless the meeting asks to refresh/expand it.
+- If external browsing/research is disabled (`no_browse`), do NOT emit any ResearchTasks with `requires_browse=true`.
+  - Still emit meeting-native artifacts and other transcript-derived proposals.
 
-How to fill ResearchTask fields (be precise):
-- `kind`:
-  - `weather_december_history`: historical average temperatures by year for a location/month.
-  - `december_headlines`: headlines/news for a topic/location in a December time window.
-- `task_id`: stable and readable so proposals can reference it (prefer deterministic):
-  - `weather:{Location}:{Month}:{Years}` (e.g., `weather:Seattle:12:10`)
-  - `headlines:{TopicOrLocation}:{Month}:{Years}` (e.g., `headlines:Seattle weather:12:5`)
-- `query`: a short, search-style query describing what to fetch (include month + metric/timeframe).
-- `location`: set when location matters (weather always; headlines when the transcript implies locality).
-  - If inferred, set it anyway and record `{"location_inferred": true, "location_value": "..."}`
-- `month`: set when a month is mentioned; use `12` for December-related tasks.
-- `years`: set when the transcript requests a time window; otherwise choose a reasonable default (10 weather, 5 headlines) and record it.
+Preferred ResearchTask format (tool-based; use this by default):
+- Always fill:
+  - `task_id`: stable and readable so proposals can reference it (prefer deterministic):
+    - `weather:{Location}:{Month}:{Years}` (e.g., `weather:Seattle:12:10`)
+    - `headlines:{Query}:{Month}:{Years}` (e.g., `headlines:AI:12:5`)
+  - `tool_name`: tool identifier (see mappings below)
+  - `args`: tool arguments dict (see mappings below)
+  - `requires_browse`: set `true` for external research tools
+- Use `assumptions` to record defaults and inferences (e.g., inferred location, default years/limit).
+
+Tool mappings (explicit):
+- Weather history by month:
+  - `tool_name`: `"weather.history_by_month"`
+  - `args`: `{ "location": <string>, "month": <1-12>, "years": <1-50>, "unit": "c"|"f"|"both" }`
+  - `requires_browse`: `true`
+- Headlines by month:
+  - `tool_name`: `"news.headlines_by_month"`
+  - `args`: `{ "query": <string>, "month": <1-12>, "years": <1-50>, "limit": <1-100> }`
+  - `requires_browse`: `true`
+
+Legacy compatibility:
+- Older orchestrator outputs may use deprecated fields (`kind`, `query`, `location`, `month`, `years`).
+- Prefer `tool_name` + `args`; only use legacy fields if you cannot express the task with the tool mappings above.
 
 How to propose artifacts (board-friendly):
 - Proposals should map cleanly to card kinds:
@@ -84,12 +97,10 @@ Example A (weather history request → task + chart proposal)
   "research_tasks": [
     {
       "task_id": "weather:Seattle:12:10",
-      "kind": "weather_december_history",
-      "query": "Seattle December average temperature history (last 10 years)",
-      "location": "Seattle",
-      "month": 12,
-      "years": 10,
-      "assumptions": {}
+      "tool_name": "weather.history_by_month",
+      "args": {"location": "Seattle", "month": 12, "years": 10, "unit": "both"},
+      "requires_browse": true,
+      "assumptions": {"unit_defaulted": "both"}
     }
   ],
   "proposals": [
@@ -109,11 +120,10 @@ Example B (headline request → task + list proposal)
   "research_tasks": [
     {
       "task_id": "headlines:AI:12:5",
-      "kind": "december_headlines",
-      "query": "major AI headlines December (last 5 years)",
-      "month": 12,
-      "years": 5,
-      "assumptions": {"scope": "global", "limit": 10}
+      "tool_name": "news.headlines_by_month",
+      "args": {"query": "major AI headlines", "month": 12, "years": 5, "limit": 10},
+      "requires_browse": true,
+      "assumptions": {"scope": "global"}
     }
   ],
   "proposals": [
