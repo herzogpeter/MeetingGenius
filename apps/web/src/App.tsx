@@ -19,6 +19,7 @@ function App() {
     boardState,
     sendTranscriptEvent,
     sendSessionContext,
+    sendClientBoardAction,
     sendReset,
   } = useBoardSocket()
 
@@ -107,6 +108,7 @@ function App() {
           <Whiteboard
             boardState={boardState}
             dismissed={effectiveDismissed}
+            sendClientBoardAction={sendClientBoardAction}
             onDismiss={(cardId) => {
               setLocallyDismissed((prev) => new Set(prev).add(cardId))
             }}
