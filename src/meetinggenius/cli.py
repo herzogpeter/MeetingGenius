@@ -68,7 +68,8 @@ async def _simulate(text: str, *, default_location: str, no_browse: bool) -> Non
     try:
       results.append(await run_research_task(t, no_browse=no_browse))
     except Exception as e:
-      print(f"[research:{t.kind}] failed: {e}")
+      label = t.tool_name or t.kind
+      print(f"[research:{label}] failed: {e}")
 
   planner = build_board_planner_agent(model)
   planner_deps = BoardPlannerDeps(

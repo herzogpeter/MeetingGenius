@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, model_validator
 
 
 class TranscriptEvent(BaseModel):
@@ -68,12 +68,32 @@ class ResearchTask(BaseModel):
   model_config = ConfigDict(extra="forbid")
 
   task_id: str
-  kind: ResearchKind
-  query: str
-  location: str | None = None
-  month: int | None = Field(default=None, ge=1, le=12)
-  years: int | None = Field(default=None, ge=1, le=50)
+  tool_name: str | None = Field(
+    default=None,
+    description="Tool identifier for generic research tasks (preferred). Example: 'weather.history_by_month'.",
+  )
+  args: dict[str, Any] = Field(
+    default_factory=dict,
+    description="Tool arguments for generic research tasks (preferred).",
+  )
+  requires_browse: bool = Field(
+    default=True,
+    description="Whether this task requires external web access/browsing.",
+  )
+
+  # Legacy fields (deprecated): kept for backward compatibility with existing orchestrator prompts.
+  kind: ResearchKind | None = Field(default=None, description="DEPRECATED: use tool_name + args instead.")
+  query: str | None = Field(default=None, description="DEPRECATED: use tool_name + args instead.")
+  location: str | None = Field(default=None, description="DEPRECATED: use tool_name + args instead.")
+  month: int | None = Field(default=None, ge=1, le=12, description="DEPRECATED: use tool_name + args instead.")
+  years: int | None = Field(default=None, ge=1, le=50, description="DEPRECATED: use tool_name + args instead.")
   assumptions: dict[str, Any] = Field(default_factory=dict)
+
+  @model_validator(mode="after")
+  def _validate_task_kind_or_tool(self) -> "ResearchTask":
+    if not self.tool_name and self.kind is None:
+      raise ValueError("ResearchTask must include either tool_name or kind (legacy).")
+    return self
 
 
 class WeatherHistoryResult(BaseModel):
@@ -253,4 +273,3 @@ class BoardState(BaseModel):
 class ToolingPolicy:
   no_browse: bool = False
   max_cards_per_minute: int = 2
-
