@@ -11,6 +11,21 @@ VITE_WS_URL="${VITE_WS_URL:-$VITE_WS_URL_DEFAULT}"
 
 cd "$ROOT_DIR"
 
+if [[ -f ".env" ]]; then
+  xtrace_was_on=0
+  if [[ "$-" == *x* ]]; then
+    xtrace_was_on=1
+    set +x
+  fi
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+  if [[ "$xtrace_was_on" == "1" ]]; then
+    set -x
+  fi
+fi
+
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
