@@ -624,6 +624,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
           await STATE.ai_runner.request()
         continue
 
+      if msg_type == "run_ai":
+        await ws.send_json({"type": "status", "message": "AI run requested by user."})
+        if STATE.ai_runner is not None:
+          await STATE.ai_runner.request()
+        continue
+
       if msg_type == "set_session_context":
         default_location = data.get("default_location")
         if not isinstance(default_location, str) or not default_location.strip():

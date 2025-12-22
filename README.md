@@ -73,6 +73,7 @@ Client → server:
 
 - `{"type":"ping"}`
 - `{"type":"reset"}`
+- `{"type":"run_ai"}` (requests an AI run using the current transcript window)
 - `{"type":"transcript_event","event":{...}}`
 - `{"type":"set_session_context","default_location":"United States","no_browse":false}` (overrides `MEETINGGENIUS_DEFAULT_LOCATION` and, when present, overrides `MEETINGGENIUS_NO_BROWSE` for this server session)
 - `{"type":"client_board_action","action":{"type":"move_card",...}}` (allowed: `move_card`, `dismiss_card`)

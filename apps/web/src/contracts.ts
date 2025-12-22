@@ -74,6 +74,7 @@ export type OutgoingMessage =
       month?: number
     }
   | { type: 'client_board_action'; action: unknown }
+  | { type: 'run_ai' }
   | { type: 'reset' }
 
 export type IncomingBoardActionsMessage = {

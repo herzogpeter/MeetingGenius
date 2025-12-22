@@ -17,6 +17,7 @@ export function useBoardSocket(): {
   boardState: BoardState
   sendTranscriptEvent: (event: TranscriptEvent) => void
   sendSessionContext: (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) => boolean
+  sendRunAi: () => boolean
   sendClientBoardAction: (action: unknown) => void
   sendReset: () => void
 } {
@@ -55,6 +56,8 @@ export function useBoardSocket(): {
       }),
     [sendMessage],
   )
+
+  const sendRunAi = useCallback(() => sendMessage({ type: 'run_ai' }), [sendMessage])
 
   const sendClientBoardAction = useCallback((action: unknown) => {
     sendMessage({ type: 'client_board_action', action })
@@ -135,6 +138,7 @@ export function useBoardSocket(): {
       boardState,
       sendTranscriptEvent,
       sendSessionContext,
+      sendRunAi,
       sendClientBoardAction,
       sendReset,
     }),
@@ -144,6 +148,7 @@ export function useBoardSocket(): {
       lastStatusMessage,
       sendClientBoardAction,
       sendReset,
+      sendRunAi,
       sendSessionContext,
       sendTranscriptEvent,
     ],
