@@ -15,6 +15,7 @@ from meetinggenius.contracts import BoardState
 
 BOARD_STATE_KEY = "board_state"
 DEFAULT_LOCATION_KEY = "default_location"
+NO_BROWSE_KEY = "no_browse"
 
 
 def _repo_root() -> Path:
@@ -85,6 +86,11 @@ def load_default_location(value_json: str) -> str | None:
   return value if isinstance(value, str) and value.strip() else None
 
 
+def load_no_browse(value_json: str) -> bool | None:
+  value = json.loads(value_json)
+  return value if isinstance(value, bool) else None
+
+
 def dump_board_state(state: BoardState) -> str:
   return json.dumps(state.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
 
@@ -93,10 +99,14 @@ def dump_default_location(value: str | None) -> str:
   return json.dumps(value, ensure_ascii=False)
 
 
+def dump_no_browse(value: bool | None) -> str:
+  return json.dumps(value, ensure_ascii=False)
+
+
 @dataclass
 class DebouncedStatePersister:
   store: SQLiteKVStore
-  snapshot_provider: Callable[[], Awaitable[tuple[BoardState, str | None]]]
+  snapshot_provider: Callable[[], Awaitable[tuple[BoardState, str | None, bool | None]]]
   debounce_seconds: float = 1.0
   _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
   _event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -142,14 +152,15 @@ class DebouncedStatePersister:
       self._last_op_at = time.monotonic()
 
       if pending_clear:
-        await asyncio.to_thread(self.store.delete_many, [BOARD_STATE_KEY, DEFAULT_LOCATION_KEY])
+        await asyncio.to_thread(self.store.delete_many, [BOARD_STATE_KEY, DEFAULT_LOCATION_KEY, NO_BROWSE_KEY])
         continue
 
       if pending_save:
-        board_state, default_location = await self.snapshot_provider()
+        board_state, default_location, no_browse = await self.snapshot_provider()
         payload = {
           BOARD_STATE_KEY: dump_board_state(board_state),
           DEFAULT_LOCATION_KEY: dump_default_location(default_location),
+          NO_BROWSE_KEY: dump_no_browse(no_browse),
         }
         await asyncio.to_thread(self.store.set_many, payload)
         continue
