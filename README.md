@@ -9,6 +9,7 @@ Prototype for an AI-powered meeting whiteboard using PydanticAI and schema-valid
 - `docs/Backlog.md`
 - `docs/Architecture.md`
 - `docs/Demo-Runbook.md`
+- `Handoff.md`
 
 ## Local setup
 
