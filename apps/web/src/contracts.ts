@@ -66,7 +66,13 @@ export type BoardState = {
 
 export type OutgoingMessage =
   | { type: 'transcript_event'; event: TranscriptEvent }
-  | { type: 'set_session_context'; default_location: string }
+  | {
+      type: 'set_session_context'
+      default_location: string
+      no_browse?: boolean
+      years?: number
+      month?: number
+    }
   | { type: 'client_board_action'; action: unknown }
   | { type: 'run_ai' }
   | { type: 'reset' }

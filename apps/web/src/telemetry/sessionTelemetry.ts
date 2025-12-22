@@ -43,8 +43,9 @@ type SessionTelemetryEvent =
       changes: {
         location?: { prev: string; next: string }
         years?: { prev: number; next: number }
+        no_browse?: { prev: boolean; next: boolean }
       }
-      current: { location: string; years: number }
+      current: { location: string; years: number; no_browse: boolean }
     }
   | {
       type: 'refresh_last_request_clicked'
@@ -182,8 +183,9 @@ export function recordAssumptionsChanged(args: {
   changes: {
     location?: { prev: string; next: string }
     years?: { prev: number; next: number }
+    no_browse?: { prev: boolean; next: boolean }
   }
-  current: { location: string; years: number }
+  current: { location: string; years: number; no_browse: boolean }
 }): void {
   pushEvent({ type: 'assumptions_changed', ts: nowIso(), changes: args.changes, current: args.current })
 }

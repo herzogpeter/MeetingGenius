@@ -30,7 +30,7 @@ Optional:
 - `MEETINGGENIUS_DEFAULT_LOCATION` (default: `Seattle`)
 - `MEETINGGENIUS_DB_PATH` (default: `./meetinggenius.sqlite3` in the repo root)
 - `MEETINGGENIUS_PERSIST_DEBOUNCE_SECONDS` (default: `1.25`)
-- `MEETINGGENIUS_NO_BROWSE=1` (disables external research tools)
+- `MEETINGGENIUS_NO_BROWSE=1` (disables external research tools unless overridden by `set_session_context.no_browse`)
 - `MEETINGGENIUS_MAX_CREATE_CARDS_PER_MINUTE` (default: `2`)
 - `MEETINGGENIUS_MIN_SECONDS_BETWEEN_CREATES` (default: `20`)
 - `MEETINGGENIUS_DEDUPE_TITLE_SIMILARITY=0|1` (default: `1`)
@@ -63,7 +63,7 @@ Built-in tools:
 The backend persists server state to SQLite so boards survive restarts and reconnecting clients converge.
 
 - Stored in a single SQLite table `kv(key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT)`.
-- Keys: `board_state` (cards/layout/dismissed) and `default_location` (session context).
+- Keys: `board_state` (cards/layout/dismissed), `default_location` (session context), `no_browse` (session context).
 - Writes are debounced (flush at most once every ~`MEETINGGENIUS_PERSIST_DEBOUNCE_SECONDS` seconds).
 - Sending `{"type":"reset"}` clears the in-memory state and deletes the persisted keys.
 
@@ -75,7 +75,7 @@ Client → server:
 - `{"type":"reset"}`
 - `{"type":"run_ai"}` (requests an AI run using the current transcript window)
 - `{"type":"transcript_event","event":{...}}`
-- `{"type":"set_session_context","default_location":"United States"}` (overrides `MEETINGGENIUS_DEFAULT_LOCATION` for this server session)
+- `{"type":"set_session_context","default_location":"United States","no_browse":false}` (overrides `MEETINGGENIUS_DEFAULT_LOCATION` and, when present, overrides `MEETINGGENIUS_NO_BROWSE` for this server session)
 - `{"type":"client_board_action","action":{"type":"move_card",...}}` (allowed: `move_card`, `dismiss_card`)
 
 Server → client:

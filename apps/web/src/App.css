@@ -72,6 +72,12 @@
   gap: 6px;
 }
 
+.mgHeaderResearch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .mgHeaderLabel {
   font-size: 12px;
   color: rgba(15, 23, 42, 0.7);
@@ -86,6 +92,10 @@
 
 .mgSelect--small {
   width: 84px;
+}
+
+.mgSelect--medium {
+  width: 120px;
 }
 
 .mgButton--small {
