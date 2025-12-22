@@ -1,5 +1,5 @@
 import './App.css'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { TranscriptPanel } from './components/TranscriptPanel'
 import { Whiteboard } from './components/Whiteboard'
 import type { TranscriptEvent } from './contracts'
@@ -9,8 +9,6 @@ import { clearSessionTelemetry, downloadSessionTelemetryJson } from './telemetry
 function App() {
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([])
   const [locallyDismissed, setLocallyDismissed] = useState<Set<string>>(() => new Set())
-  const [defaultLocation, setDefaultLocation] = useState<string>('Seattle')
-  const [clientStatusMessage, setClientStatusMessage] = useState<string | null>(null)
 
   const {
     connectionState,
@@ -18,21 +16,14 @@ function App() {
     boardState,
     sendTranscriptEvent,
     sendClientBoardAction,
-    sendSessionContext,
     sendReset,
   } = useBoardSocket()
-
-  useEffect(() => {
-    if (lastStatusMessage) setClientStatusMessage(null)
-  }, [lastStatusMessage])
 
   const effectiveDismissed = useMemo(() => {
     const dismissed = new Set<string>([...locallyDismissed])
     for (const cardId of Object.keys(boardState.dismissed ?? {})) dismissed.add(cardId)
     return dismissed
   }, [boardState.dismissed, locallyDismissed])
-
-  const statusMessage = clientStatusMessage ?? lastStatusMessage
 
   return (
     <div className="mgApp">
@@ -42,33 +33,8 @@ function App() {
           <div className={`mgPill mgPill--${connectionState}`}>
             WS: {connectionState}
           </div>
-          {statusMessage ? <div className="mgStatus">{statusMessage}</div> : null}
+          {lastStatusMessage ? <div className="mgStatus">{lastStatusMessage}</div> : null}
           <div className="mgHeaderActions">
-            <div className="mgHeaderLocation">
-              <label className="mgHeaderLabel" htmlFor="mgLocationInput">
-                Location
-              </label>
-              <input
-                id="mgLocationInput"
-                className="mgInput mgInput--small"
-                value={defaultLocation}
-                onChange={(e) => setDefaultLocation(e.target.value)}
-              />
-              <button
-                className="mgButton mgButton--small"
-                disabled={connectionState !== 'open'}
-                onClick={() => {
-                  const nextLocation = defaultLocation.trim()
-                  if (!nextLocation) return
-                  if (sendSessionContext(nextLocation)) {
-                    setDefaultLocation(nextLocation)
-                    setClientStatusMessage(`Location set: ${nextLocation}`)
-                  }
-                }}
-              >
-                Set
-              </button>
-            </div>
             <button className="mgButton mgButton--small" onClick={downloadSessionTelemetryJson}>
               Export session JSON
             </button>
