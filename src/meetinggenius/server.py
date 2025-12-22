@@ -287,6 +287,8 @@ class AIRunner:
         "Current board state:",
         board_summary,
         "",
+        f"Default location: {default_location}",
+        f"External browsing/research enabled: {not no_browse}",
         "Noise controls:",
         "- Prefer updating existing cards; avoid creating new ones unless it's a truly new topic.",
         "- The backend may throttle or convert `create_card` actions to reduce duplicates.",
@@ -302,6 +304,8 @@ class AIRunner:
     if not tasks:
       combined_text = "\n".join(e.text for e in events if e.text)
       tasks = auto_seed_research_tasks(combined_text, default_location=default_location)
+      if tasks:
+        decision = decision.model_copy(update={"research_tasks": tasks})
 
     results = []
     if tasks:
