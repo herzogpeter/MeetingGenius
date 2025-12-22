@@ -11,6 +11,7 @@ import { emptyBoardState } from '../contracts'
 import {
   recordBoardActionsReceived,
   recordConnectionStateChanged,
+  recordServerErrorReceived,
   recordTranscriptEventSent,
 } from '../telemetry/sessionTelemetry'
 
@@ -133,6 +134,7 @@ export function useBoardSocket(): {
         if (message.type === 'error') {
           setLastError(message)
           setLastStatusMessage(message.message)
+          recordServerErrorReceived(message)
           return
         }
 
