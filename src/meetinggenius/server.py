@@ -22,10 +22,22 @@ from meetinggenius.contracts import (
   TranscriptEvent,
   UpdateCardAction,
 )
+from meetinggenius.sqlite_store import (
+  BOARD_STATE_KEY,
+  DEFAULT_LOCATION_KEY,
+  DebouncedStatePersister,
+  SQLiteKVStore,
+  load_board_state,
+  load_default_location,
+  resolve_db_path,
+)
 from meetinggenius.task_seeding import auto_seed_research_tasks
 from meetinggenius.tools.research import run_research_task
 
 app = FastAPI(title="MeetingGenius Realtime Backend")
+
+PERSIST_STORE: SQLiteKVStore | None = None
+PERSISTOR: DebouncedStatePersister | None = None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -176,7 +188,10 @@ class RealtimeState:
     async with self.state_lock:
       self.transcript.clear()
       self.board_state = BoardState.empty()
+      self.default_location = None
       self.version += 1
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_clear()
     await self.status("State reset.")
     await self.broadcast({"type": "board_actions", "actions": [], "state": _state_to_json(BoardState.empty())})
 
@@ -208,6 +223,8 @@ class RealtimeState:
   async def set_default_location(self, value: str) -> None:
     async with self.state_lock:
       self.default_location = value
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
 
   async def apply_board_actions(self, *, expected_version: int, actions: list[BoardAction]) -> BoardState | None:
     async with self.state_lock:
@@ -218,7 +235,9 @@ class RealtimeState:
         next_state = apply_action(next_state, action)
       self.board_state = next_state
       self.version += 1
-      return next_state
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
+    return next_state
 
   async def apply_board_actions_now(self, actions: list[BoardAction]) -> tuple[int, BoardState]:
     async with self.state_lock:
@@ -227,7 +246,10 @@ class RealtimeState:
         next_state = apply_action(next_state, action)
       self.board_state = next_state
       self.version += 1
-      return self.version, next_state
+      version = self.version
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
+    return version, next_state
 
 
 class AIRunner:
@@ -467,6 +489,45 @@ class AIRunner:
 
 STATE = RealtimeState()
 STATE.ai_runner = AIRunner(STATE)
+
+
+async def _persistence_snapshot() -> tuple[BoardState, str | None]:
+  async with STATE.state_lock:
+    return STATE.board_state, STATE.default_location
+
+
+@app.on_event("startup")
+async def _load_persisted_state() -> None:
+  global PERSIST_STORE, PERSISTOR
+
+  db_path = resolve_db_path()
+  PERSIST_STORE = SQLiteKVStore(db_path)
+  PERSISTOR = DebouncedStatePersister(
+    store=PERSIST_STORE,
+    snapshot_provider=_persistence_snapshot,
+    debounce_seconds=_env_float("MEETINGGENIUS_PERSIST_DEBOUNCE_SECONDS", 1.25),
+  )
+
+  if not db_path.exists():
+    return
+
+  try:
+    raw_board = PERSIST_STORE.get_value_json(BOARD_STATE_KEY)
+    raw_location = PERSIST_STORE.get_value_json(DEFAULT_LOCATION_KEY)
+    board_state = load_board_state(raw_board) if raw_board else None
+    default_location = load_default_location(raw_location) if raw_location else None
+  except Exception:
+    print("WARN: failed to load persisted state; starting with defaults.")
+    traceback.print_exc(limit=15)
+    return
+
+  if board_state is None and default_location is None:
+    return
+
+  async with STATE.state_lock:
+    if board_state is not None:
+      STATE.board_state = board_state
+    STATE.default_location = default_location
 
 
 @app.websocket("/ws")
