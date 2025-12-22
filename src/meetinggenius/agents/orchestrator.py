@@ -6,6 +6,14 @@ from pydantic_ai import Agent
 
 from meetinggenius.contracts import BoardState, CardKind, OrchestratorDecision, ToolingPolicy, TranscriptEvent
 
+MEETING_NATIVE_LIST_CARD_IDS = {
+  "list-decisions",
+  "list-actions",
+  "list-questions",
+  "list-risks",
+  "list-next-steps",
+}
+
 
 @dataclass(frozen=True)
 class OrchestratorDeps:
@@ -26,6 +34,21 @@ Core rules:
 - Use the board-state summary to avoid duplicates: prefer updating an existing topic/card over proposing a new one.
 - Prefer updating existing cards; avoid proposing new ones unless it's truly a new topic (the backend may throttle/de-dupe creates).
 - Be conservative with assumptions; when you infer something, record it in `assumptions`.
+
+Meeting-native artifacts (ALWAYS consider; no research required):
+- Decisions log
+- Action items (include owner + due date if stated)
+- Open questions / unknowns
+- Risks / blockers
+- Next steps
+
+Rules for meeting-native artifacts:
+- These come purely from the transcript and do NOT need research tasks, even when browsing is enabled.
+- Prefer stable list proposal IDs so the planner can deterministically update rather than creating new cards:
+  - `list-decisions`, `list-actions`, `list-questions`, `list-risks`, `list-next-steps`
+- Use `kind="list"` and board-friendly, short titles for these proposals.
+- If the transcript window contains any relevant items, emit the corresponding proposals (using the stable IDs above) so the planner can update/create the cards.
+- Keep proposals concise; prioritize the most valuable artifacts for the current transcript window.
 
 When to emit ResearchTasks:
 - Emit ResearchTasks only when external data is explicitly requested or strongly implied (e.g., historical weather, facts, headlines).
@@ -126,7 +149,13 @@ def format_transcript_window(events: list[TranscriptEvent]) -> str:
   return "\n".join(lines)
 
 
-def format_board_state_summary(state: BoardState, *, max_cards: int = 25, max_dismissed: int = 10) -> str:
+def format_board_state_summary(
+  state: BoardState,
+  *,
+  max_cards: int = 25,
+  max_dismissed: int = 10,
+  max_meeting_native_items: int = 25,
+) -> str:
   """Summarize the current board so the model can update instead of duplicating cards."""
   if not state.cards and not state.dismissed:
     return "(empty board)"
@@ -154,6 +183,21 @@ def format_board_state_summary(state: BoardState, *, max_cards: int = 25, max_di
       else:
         props = card.props  # type: ignore[attr-defined]
         lines.append(f"- {card_id} [list] {title!r} (items={len(props.items)}, sources={len(sources)})")
+        if card_id in MEETING_NATIVE_LIST_CARD_IDS and getattr(props, "items", None):
+          preview = list(props.items)[:max_meeting_native_items]
+          for item in preview:
+            text = getattr(item, "text", "") or ""
+            meta = getattr(item, "meta", None)
+            url = getattr(item, "url", None)
+            suffix_parts: list[str] = []
+            if meta:
+              suffix_parts.append(str(meta))
+            if url:
+              suffix_parts.append(str(url))
+            suffix = f" ({' | '.join(suffix_parts)})" if suffix_parts else ""
+            lines.append(f"  - {text}{suffix}")
+          if len(props.items) > len(preview):
+            lines.append("  - …")
 
     remaining = len(items) - max_cards
     if remaining > 0:

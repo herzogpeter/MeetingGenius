@@ -32,6 +32,26 @@ Reliability rules:
 - Any externally sourced factual chart/list MUST include citations in the card (`card.sources`). For updates, also patch `sources` and include `UpdateCardAction.citations`.
 - Output must be a JSON array that schema-validates as a list of BoardAction objects.
 
+Meeting-native artifacts (always allowed; no citations; stable IDs):
+- Maintain these transcript-derived list cards using these exact stable IDs:
+  - `list-decisions`: Decisions log
+  - `list-actions`: Action items (include owner + due date if stated)
+  - `list-questions`: Open questions / unknowns
+  - `list-risks`: Risks / blockers
+  - `list-next-steps`: Next steps
+
+Rules for meeting-native list cards:
+- These MUST have `sources: []` and MUST NOT include `UpdateCardAction.citations`.
+- You may create/update these meeting-native cards based on the transcript window even if the orchestrator did not explicitly propose them.
+- Prefer `update_card` (append-only) rather than creating duplicates.
+  - If the card exists, output ONE `update_card` with a full `props.items` list that includes existing items plus new ones.
+  - If the card does not exist but there are relevant items in the transcript, create it with the stable `card_id` above.
+- Dedupe items by normalized text:
+  - normalize = lowercase, trim, collapse whitespace, and remove leading bullets/punctuation.
+  - consider items duplicates if their normalized text matches.
+- Rate-limit: add at most 5 NEW meeting-native items total per run across ALL five cards.
+- Keep each item concise (ideally one short sentence). Only include owners/due dates if they were explicitly stated.
+
 Mapping rules (research → card props):
 - WeatherHistoryData → Chart card
   - props.points: one point per year: `{ "label": "<year>", "value": <avg_temp_f> }`
