@@ -255,6 +255,7 @@ class OrchestratorDecision(BaseModel):
 
   research_tasks: list[ResearchTask] = Field(default_factory=list)
   proposals: list[ArtifactProposal] = Field(default_factory=list)
+  assumptions: dict[str, Any] = Field(default_factory=dict)
 
 
 class BoardState(BaseModel):

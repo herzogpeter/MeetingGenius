@@ -1,4 +1,11 @@
-import type { Card, CardKind, IncomingBoardActionsMessage, Rect, TranscriptEvent } from '../contracts'
+import type {
+  Card,
+  CardKind,
+  IncomingBoardActionsMessage,
+  IncomingErrorMessage,
+  Rect,
+  TranscriptEvent,
+} from '../contracts'
 
 type ConnectionState = 'connecting' | 'open' | 'closed' | 'error'
 
@@ -24,6 +31,12 @@ type SessionTelemetryEvent =
       actions_count: number
       cards_count: number
       card_kinds: Record<CardKind, number>
+    }
+  | {
+      type: 'server_error_received'
+      ts: string
+      message: string
+      details?: unknown
     }
   | {
       type: 'card_dismissed'
@@ -179,6 +192,15 @@ export function recordBoardActionsReceived(message: IncomingBoardActionsMessage)
     actions_count: Array.isArray(message.actions) ? message.actions.length : 0,
     cards_count: message.state?.cards ? Object.keys(message.state.cards).length : 0,
     card_kinds: summarizeCardKinds(message.state?.cards),
+  })
+}
+
+export function recordServerErrorReceived(message: IncomingErrorMessage): void {
+  pushEvent({
+    type: 'server_error_received',
+    ts: nowIso(),
+    message: message.message,
+    details: message.details,
   })
 }
 
