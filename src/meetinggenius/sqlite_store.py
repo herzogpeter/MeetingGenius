@@ -133,10 +133,11 @@ class DebouncedStatePersister:
         self._pending_clear = False
         self._pending_save = False
 
-      elapsed = time.monotonic() - self._last_op_at
-      delay = max(0.0, self.debounce_seconds - elapsed)
-      if delay > 0:
-        await asyncio.sleep(delay)
+      if pending_save:
+        elapsed = time.monotonic() - self._last_op_at
+        delay = max(0.0, self.debounce_seconds - elapsed)
+        if delay > 0:
+          await asyncio.sleep(delay)
 
       self._last_op_at = time.monotonic()
 
