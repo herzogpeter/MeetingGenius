@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from meetinggenius.board.reducer import apply_action
 from meetinggenius.contracts import (
@@ -133,6 +133,7 @@ class RealtimeState:
 
   transcript: deque[tuple[float, TranscriptEvent]] = field(default_factory=deque)
   board_state: BoardState = field(default_factory=BoardState.empty)
+  default_location: str | None = None
   version: int = 0
   state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -200,6 +201,14 @@ class RealtimeState:
       state = self.board_state
     return version, events, state
 
+  async def get_default_location(self) -> str | None:
+    async with self.state_lock:
+      return self.default_location
+
+  async def set_default_location(self, value: str) -> None:
+    async with self.state_lock:
+      self.default_location = value
+
   async def apply_board_actions(self, *, expected_version: int, actions: list[BoardAction]) -> BoardState | None:
     async with self.state_lock:
       if self.version != expected_version:
@@ -208,7 +217,17 @@ class RealtimeState:
       for action in actions:
         next_state = apply_action(next_state, action)
       self.board_state = next_state
+      self.version += 1
       return next_state
+
+  async def apply_board_actions_now(self, actions: list[BoardAction]) -> tuple[int, BoardState]:
+    async with self.state_lock:
+      next_state = self.board_state
+      for action in actions:
+        next_state = apply_action(next_state, action)
+      self.board_state = next_state
+      self.version += 1
+      return self.version, next_state
 
 
 class AIRunner:
@@ -256,7 +275,8 @@ class AIRunner:
     await self._state.status("Running orchestrator…")
 
     model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
-    default_location = os.getenv("MEETINGGENIUS_DEFAULT_LOCATION") or "Seattle"
+    session_location = await self._state.get_default_location()
+    default_location = session_location or (os.getenv("MEETINGGENIUS_DEFAULT_LOCATION") or "Seattle")
     no_browse = _env_bool("MEETINGGENIUS_NO_BROWSE", False)
     policy = ToolingPolicy(no_browse=no_browse)
 
@@ -489,6 +509,64 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await STATE.add_transcript_event(event)
         if event.is_final and STATE.ai_runner is not None:
           await STATE.ai_runner.request()
+        continue
+
+      if msg_type == "set_session_context":
+        default_location = data.get("default_location")
+        if not isinstance(default_location, str) or not default_location.strip():
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid set_session_context payload.",
+              "details": {"default_location": "Expected non-empty string."},
+            }
+          )
+          continue
+
+        await STATE.set_default_location(default_location.strip())
+        await ws.send_json(
+          {"type": "status", "message": f"Session default location set to {default_location.strip()}."}
+        )
+        continue
+
+      if msg_type == "client_board_action":
+        raw_action = data.get("action")
+        if not isinstance(raw_action, dict):
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid client_board_action payload.",
+              "details": {"action": "Expected JSON object."},
+            }
+          )
+          continue
+
+        try:
+          action = TypeAdapter(BoardAction).validate_python(raw_action)
+        except ValidationError as e:
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid board action payload.",
+              "details": {"errors": e.errors()},
+            }
+          )
+          continue
+
+        if getattr(action, "type", None) not in {"move_card", "dismiss_card"}:
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Unsupported board action type.",
+              "details": {"allowed": ["move_card", "dismiss_card"], "type": getattr(action, "type", None)},
+            }
+          )
+          continue
+
+        _, next_state = await STATE.apply_board_actions_now([action])
+        await STATE.broadcast(
+          {"type": "board_actions", "actions": _actions_to_json([action]), "state": _state_to_json(next_state)}
+        )
         continue
 
       await ws.send_json(

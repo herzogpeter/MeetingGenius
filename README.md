@@ -41,6 +41,23 @@ uvicorn meetinggenius.server:app --reload --port 8000
 
 WebSocket endpoint: `ws://localhost:8000/ws`
 
+### WebSocket messages
+
+Client → server:
+
+- `{"type":"ping"}`
+- `{"type":"reset"}`
+- `{"type":"transcript_event","event":{...}}`
+- `{"type":"set_session_context","default_location":"United States"}` (overrides `MEETINGGENIUS_DEFAULT_LOCATION` for this server session)
+- `{"type":"client_board_action","action":{"type":"move_card",...}}` (allowed: `move_card`, `dismiss_card`)
+
+Server → client:
+
+- `{"type":"pong"}`
+- `{"type":"status","message":"..."}`
+- `{"type":"board_actions","actions":[...],"state":{...}}`
+- `{"type":"error","message":"...","details":{...}}`
+
 ## Run frontend (prototype)
 
 Vite + React app that connects to the backend WebSocket and renders the current board state:
