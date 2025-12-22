@@ -2,6 +2,11 @@
 
 This document captures current state, key learnings, known issues, and the next steps for continuing development in a fresh agent thread.
 
+## Recent Merges
+
+- PR #17 (commit `0f6cd7e7175b2fd246bbb4dbbb06edfefbea8c7e`) — Fixed the “grey/empty board” by seeding meeting-native base cards on first AI run.
+- PR #18 (commit `7737c07ce883d0d5b4588a30092533d5e219b26e`) — Merged resilience/telemetry improvements.
+
 ## What We Built (Current Capabilities)
 
 ### End-to-end “AI whiteboard” loop
@@ -86,6 +91,7 @@ Server → client:
 Preferred:
 
 - `./demo.sh`
+  - `.env` is gitignored; `demo.sh` will automatically `source .env` if it exists.
 
 Manual:
 
@@ -120,22 +126,9 @@ Fix:
   - `export MEETINGGENIUS_MODEL="anthropic:claude-3-5-haiku-latest"`
   - restart backend (existing `uvicorn` won’t pick up new env).
 
-### 2) Whiteboard area is “blank/grey” even though transcript is sent
-
-Likely cause:
-
-- The board planner may emit `update_card` actions for meeting-native stable IDs (`list-decisions`, etc.) before those cards exist.
-- `update_card` on a missing card is a no-op in the reducer, so the board remains empty.
-
-Recommended fix:
-
-- Seed the five meeting-native base list cards automatically **on the first AI run** (not on reset, to keep smoke tests/semantics), and exempt them from throttling/dedupe.
-
 ## Next Steps (Highest ROI)
 
-1) **Fix “blank grey whiteboard”** by seeding meeting-native base cards on first AI run.
-2) Extend session context to include **years/month** (UI already tracks years; currently not enforced structurally).
-3) Add “meeting templates” button(s) to create/pin base cards immediately (standup/planning/sales call layouts).
-4) Improve layout: place stable meeting-native cards in predictable columns.
-5) Add “pin/lock” so users can prevent AI from modifying specific cards.
-
+1) Extend session context to include **years/month** (UI already tracks years; currently not enforced structurally).
+2) Add “meeting templates” button(s) to create/pin base cards immediately (standup/planning/sales call layouts).
+3) Improve layout: place stable meeting-native cards in predictable columns.
+4) Add “pin/lock” so users can prevent AI from modifying specific cards.
