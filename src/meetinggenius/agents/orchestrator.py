@@ -24,6 +24,7 @@ You will receive BOTH:
 Core rules:
 - Prefer usefulness over novelty; avoid distractions.
 - Use the board-state summary to avoid duplicates: prefer updating an existing topic/card over proposing a new one.
+- Prefer updating existing cards; avoid proposing new ones unless it's truly a new topic (the backend may throttle/de-dupe creates).
 - Be conservative with assumptions; when you infer something, record it in `assumptions`.
 
 When to emit ResearchTasks:

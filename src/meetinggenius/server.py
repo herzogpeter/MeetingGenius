@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import traceback
 from collections import deque
@@ -13,7 +14,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from meetinggenius.board.reducer import apply_action
-from meetinggenius.contracts import BoardAction, BoardState, ToolingPolicy, TranscriptEvent
+from meetinggenius.contracts import (
+  BoardAction,
+  BoardState,
+  CreateCardAction,
+  ToolingPolicy,
+  TranscriptEvent,
+  UpdateCardAction,
+)
 from meetinggenius.task_seeding import auto_seed_research_tasks
 from meetinggenius.tools.research import run_research_task
 
@@ -53,6 +61,69 @@ def _actions_to_json(actions: list[BoardAction]) -> list[dict[str, Any]]:
 
 def _state_to_json(state: BoardState) -> dict[str, Any]:
   return state.model_dump(mode="json")
+
+
+def _normalize_title(value: str) -> str:
+  cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower())
+  return " ".join(cleaned.split())
+
+
+def _title_similarity(a: str, b: str) -> float:
+  a_norm = _normalize_title(a)
+  b_norm = _normalize_title(b)
+  if not a_norm or not b_norm:
+    return 0.0
+  if a_norm == b_norm:
+    return 1.0
+  a_tokens = set(a_norm.split())
+  b_tokens = set(b_norm.split())
+  if not a_tokens or not b_tokens:
+    return 0.0
+  return len(a_tokens & b_tokens) / len(a_tokens | b_tokens)
+
+
+def _very_similar_title(a: str, b: str) -> bool:
+  a_norm = _normalize_title(a)
+  b_norm = _normalize_title(b)
+  if not a_norm or not b_norm:
+    return False
+  if a_norm == b_norm:
+    return True
+
+  if _title_similarity(a_norm, b_norm) >= 0.85:
+    return True
+
+  if (a_norm in b_norm or b_norm in a_norm) and min(len(a_norm), len(b_norm)) >= 12:
+    return True
+
+  a_tokens = set(a_norm.split())
+  b_tokens = set(b_norm.split())
+  overlap = len(a_tokens & b_tokens) / min(len(a_tokens), len(b_tokens))
+  return overlap >= 0.9
+
+
+def _card_title_for_match(card: Any) -> str:
+  props = getattr(card, "props", None)
+  title = getattr(props, "title", None)
+  return title if isinstance(title, str) else ""
+
+
+def _find_similar_card_id(state: BoardState, *, kind: Any, title: str) -> str | None:
+  best_id: str | None = None
+  best_score = 0.0
+  for card_id, card in state.cards.items():
+    if getattr(card, "kind", None) != kind:
+      continue
+    existing_title = _card_title_for_match(card)
+    if not existing_title:
+      continue
+    if not _very_similar_title(existing_title, title):
+      continue
+    score = _title_similarity(existing_title, title)
+    if score > best_score:
+      best_id = card_id
+      best_score = score
+  return best_id
 
 
 @dataclass
@@ -148,6 +219,8 @@ class AIRunner:
     self._task: asyncio.Task[None] | None = None
     self._pending = False
     self._last_started_at = 0.0
+    self._create_timestamps: deque[float] = deque()
+    self._last_create_at = 0.0
 
   async def request(self) -> None:
     async with self._lock:
@@ -216,6 +289,9 @@ class AIRunner:
         "",
         f"Default location: {default_location}",
         f"External browsing/research enabled: {not no_browse}",
+        "Noise controls:",
+        "- Prefer updating existing cards; avoid creating new ones unless it's a truly new topic.",
+        "- The backend may throttle or convert `create_card` actions to reduce duplicates.",
         "",
         "Return a valid OrchestratorDecision for this context.",
       ]
@@ -257,11 +333,18 @@ class AIRunner:
         "Current board state:",
         board_summary,
         "",
+        "Noise controls:",
+        "- Prefer `update_card` over `create_card` when possible.",
+        "- Creating new cards is rate-limited; some creates may be dropped.",
+        "- Similar-title creates may be converted into updates.",
+        "",
         "Orchestrator decision (JSON):",
         decision.model_dump_json(indent=2),
         "",
         "Research results (JSON):",
         json.dumps([r.model_dump(mode="json") for r in results], indent=2),
+        "",
+        "Output a JSON array that schema-validates as a list of BoardAction objects.",
       ]
     ).strip()
     if no_browse:
@@ -270,14 +353,96 @@ class AIRunner:
       lambda: planner.run_sync(planner_prompt, deps=planner_deps).output
     )
 
-    next_state = await self._state.apply_board_actions(expected_version=version, actions=actions)
+    processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
+      board_state, actions
+    )
+
+    next_state = await self._state.apply_board_actions(expected_version=version, actions=processed_actions)
     if next_state is None:
       await self._state.status("Discarded AI result (state changed).")
       return
 
+    self._create_timestamps = next_timestamps
+    self._last_create_at = next_last_create
+    if throttle_msg:
+      await self._state.status(throttle_msg)
+
     await self._state.broadcast(
-      {"type": "board_actions", "actions": _actions_to_json(actions), "state": _state_to_json(next_state)}
+      {
+        "type": "board_actions",
+        "actions": _actions_to_json(processed_actions),
+        "state": _state_to_json(next_state),
+      }
     )
+
+  def _post_process_actions(
+    self, board_state: BoardState, actions: list[BoardAction]
+  ) -> tuple[list[BoardAction], str | None, deque[float], float]:
+    dedupe_enabled = _env_bool("MEETINGGENIUS_DEDUPE_TITLE_SIMILARITY", True)
+    max_per_minute = _env_int("MEETINGGENIUS_MAX_CREATE_CARDS_PER_MINUTE", 2)
+    min_between_s = _env_float("MEETINGGENIUS_MIN_SECONDS_BETWEEN_CREATES", 20.0)
+
+    deduped: list[BoardAction] = []
+    for action in actions:
+      if not dedupe_enabled or not isinstance(action, CreateCardAction):
+        deduped.append(action)
+        continue
+
+      card = action.card
+      title = _card_title_for_match(card)
+      if not title:
+        deduped.append(action)
+        continue
+
+      similar_id = _find_similar_card_id(board_state, kind=getattr(card, "kind", None), title=title)
+      if similar_id is None:
+        deduped.append(action)
+        continue
+
+      patch: dict[str, Any] = {"props": card.props.model_dump(mode="python")}
+      if getattr(card, "sources", None):
+        patch["sources"] = [c.model_dump(mode="python") for c in card.sources]
+      deduped.append(
+        UpdateCardAction(
+          card_id=similar_id,
+          patch=patch,
+          citations=card.sources if getattr(card, "sources", None) else None,
+        )
+      )
+
+    now = time.time()
+    next_timestamps = deque(self._create_timestamps)
+    while next_timestamps and now - next_timestamps[0] > 60.0:
+      next_timestamps.popleft()
+    next_last_create = self._last_create_at
+
+    throttled = 0
+    output: list[BoardAction] = []
+    for action in deduped:
+      if not isinstance(action, CreateCardAction):
+        output.append(action)
+        continue
+
+      if min_between_s > 0 and now - next_last_create < min_between_s:
+        throttled += 1
+        continue
+
+      if max_per_minute <= 0 or len(next_timestamps) >= max_per_minute:
+        throttled += 1
+        continue
+
+      output.append(action)
+      next_timestamps.append(now)
+      next_last_create = now
+
+    msg = None
+    if throttled:
+      msg = (
+        f"Throttled {throttled} create_card action(s) "
+        f"(max {max_per_minute}/min, min {int(min_between_s)}s between creates)."
+      )
+
+    return output, msg, next_timestamps, next_last_create
 
 
 STATE = RealtimeState()

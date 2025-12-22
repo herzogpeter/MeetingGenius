@@ -27,6 +27,7 @@ Reliability rules:
 - Avoid card spam: prefer updating an existing card over creating a new one.
   - If `proposal_id` matches an existing `card_id`, update that card.
   - Otherwise, match by same kind + similar title/topic and update when reasonable.
+- Prefer `update_card` over `create_card` unless it's truly a new topic (creates may be throttled/de-duped by the backend).
 - Never fabricate factual data. If a proposal requires research but the required research results are missing, do not invent numbers or headlines.
 - Any externally sourced factual chart/list MUST include citations in the card (`card.sources`). For updates, also patch `sources` and include `UpdateCardAction.citations`.
 - Output must be a JSON array that schema-validates as a list of BoardAction objects.
