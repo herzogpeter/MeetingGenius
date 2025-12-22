@@ -66,6 +66,7 @@ export type BoardState = {
 
 export type OutgoingMessage =
   | { type: 'transcript_event'; event: TranscriptEvent }
+  | { type: 'set_session_context'; default_location: string }
   | { type: 'reset' }
 
 export type IncomingBoardActionsMessage = {
@@ -83,4 +84,3 @@ export const emptyBoardState = (): BoardState => ({
   layout: {},
   dismissed: {},
 })
-

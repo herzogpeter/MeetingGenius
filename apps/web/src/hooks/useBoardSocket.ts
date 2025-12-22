@@ -16,6 +16,7 @@ export function useBoardSocket(): {
   lastStatusMessage: string | null
   boardState: BoardState
   sendTranscriptEvent: (event: TranscriptEvent) => void
+  sendSessionContext: (defaultLocation: string) => boolean
   sendReset: () => void
 } {
   const socketRef = useRef<WebSocket | null>(null)
@@ -39,6 +40,11 @@ export function useBoardSocket(): {
         recordTranscriptEventSent(event)
       }
     },
+    [sendMessage],
+  )
+
+  const sendSessionContext = useCallback(
+    (defaultLocation: string) => sendMessage({ type: 'set_session_context', default_location: defaultLocation }),
     [sendMessage],
   )
 
@@ -111,7 +117,14 @@ export function useBoardSocket(): {
   }, [connect])
 
   return useMemo(
-    () => ({ connectionState, lastStatusMessage, boardState, sendTranscriptEvent, sendReset }),
-    [boardState, connectionState, lastStatusMessage, sendReset, sendTranscriptEvent],
+    () => ({
+      connectionState,
+      lastStatusMessage,
+      boardState,
+      sendTranscriptEvent,
+      sendSessionContext,
+      sendReset,
+    }),
+    [boardState, connectionState, lastStatusMessage, sendReset, sendSessionContext, sendTranscriptEvent],
   )
 }
