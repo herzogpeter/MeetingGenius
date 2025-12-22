@@ -17,7 +17,11 @@ from meetinggenius.board.reducer import apply_action
 from meetinggenius.contracts import (
   BoardAction,
   BoardState,
+  CardKind,
   CreateCardAction,
+  ListCard,
+  ListCardProps,
+  Rect,
   ToolingPolicy,
   TranscriptEvent,
   UpdateCardAction,
@@ -40,6 +44,58 @@ app = FastAPI(title="MeetingGenius Realtime Backend")
 
 PERSIST_STORE: SQLiteKVStore | None = None
 PERSISTOR: DebouncedStatePersister | None = None
+
+MEETING_NATIVE_BASE_LIST_CARDS: tuple[tuple[str, str], ...] = (
+  ("list-decisions", "Decisions"),
+  ("list-actions", "Action Items"),
+  ("list-questions", "Open Questions"),
+  ("list-risks", "Risks / Blockers"),
+  ("list-next-steps", "Next Steps"),
+)
+MEETING_NATIVE_BASE_LIST_CARD_IDS = {card_id for card_id, _ in MEETING_NATIVE_BASE_LIST_CARDS}
+
+
+def _meeting_native_seed_rect(index: int) -> Rect:
+  # Mirror the frontend's 2-column auto layout.
+  gutter = 16
+  w = 420
+  h = 280
+  col_width = w + gutter
+  row_height = h + gutter
+  col = index % 2
+  row = index // 2
+  return Rect(x=gutter + col * col_width, y=gutter + row * row_height, w=w, h=h)
+
+
+def _meeting_native_seed_actions(board_state: BoardState, actions: list[BoardAction]) -> list[CreateCardAction]:
+  if board_state.cards:
+    return []
+
+  meeting_native_referenced = any(
+    (isinstance(action, UpdateCardAction) and action.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS)
+    or (isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS)
+    for action in actions
+  )
+  if not meeting_native_referenced:
+    return []
+
+  create_ids = {action.card.card_id for action in actions if isinstance(action, CreateCardAction)}
+  seeded: list[CreateCardAction] = []
+  for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
+    if card_id in create_ids:
+      continue
+    seeded.append(
+      CreateCardAction(
+        card=ListCard(
+          card_id=card_id,
+          kind=CardKind.LIST,
+          props=ListCardProps(title=title, items=[]),
+          sources=[],
+        ),
+        rect=_meeting_native_seed_rect(idx),
+      )
+    )
+  return seeded
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -445,6 +501,10 @@ class AIRunner:
       lambda: planner.run_sync(planner_prompt, deps=planner_deps).output
     )
 
+    seed_actions = _meeting_native_seed_actions(board_state, actions)
+    if seed_actions:
+      actions = seed_actions + actions
+
     processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
       board_state, actions
     )
@@ -502,6 +562,9 @@ class AIRunner:
 
     deduped: list[BoardAction] = []
     for action in actions:
+      if isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+        deduped.append(action)
+        continue
       if not dedupe_enabled or not isinstance(action, CreateCardAction):
         deduped.append(action)
         continue
@@ -537,6 +600,9 @@ class AIRunner:
     throttled = 0
     output: list[BoardAction] = []
     for action in deduped:
+      if isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+        output.append(action)
+        continue
       if not isinstance(action, CreateCardAction):
         output.append(action)
         continue
