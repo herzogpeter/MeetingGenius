@@ -15,6 +15,7 @@ function App() {
     lastStatusMessage,
     boardState,
     sendTranscriptEvent,
+    sendClientBoardAction,
     sendReset,
   } = useBoardSocket()
 
@@ -32,9 +33,7 @@ function App() {
           <div className={`mgPill mgPill--${connectionState}`}>
             WS: {connectionState}
           </div>
-          {lastStatusMessage ? (
-            <div className="mgStatus">{lastStatusMessage}</div>
-          ) : null}
+          {lastStatusMessage ? <div className="mgStatus">{lastStatusMessage}</div> : null}
           <div className="mgHeaderActions">
             <button className="mgButton mgButton--small" onClick={downloadSessionTelemetryJson}>
               Export session JSON
@@ -68,6 +67,7 @@ function App() {
           <Whiteboard
             boardState={boardState}
             dismissed={effectiveDismissed}
+            sendClientBoardAction={sendClientBoardAction}
             onDismiss={(cardId) => {
               setLocallyDismissed((prev) => new Set(prev).add(cardId))
             }}
