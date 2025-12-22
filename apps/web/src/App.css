@@ -22,6 +22,13 @@
 
 .mgHeaderMeta {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.mgHeaderTopRow {
+  display: flex;
   align-items: center;
   gap: 10px;
 }
@@ -30,6 +37,33 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.mgHeaderAssumptions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mgHeaderAssumptionsLabel {
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.7);
+}
+
+.mgHeaderAssumptionsChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mgHeaderAssumptionsControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .mgHeaderLocation {
@@ -48,6 +82,10 @@
   border-radius: 999px;
   font-size: 12px;
   width: 160px;
+}
+
+.mgSelect--small {
+  width: 84px;
 }
 
 .mgButton--small {
