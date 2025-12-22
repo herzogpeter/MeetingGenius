@@ -4,6 +4,7 @@ import { TranscriptPanel } from './components/TranscriptPanel'
 import { Whiteboard } from './components/Whiteboard'
 import type { TranscriptEvent } from './contracts'
 import { useBoardSocket } from './hooks/useBoardSocket'
+import { clearSessionTelemetry, downloadSessionTelemetryJson } from './telemetry/sessionTelemetry'
 
 function App() {
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([])
@@ -34,6 +35,14 @@ function App() {
           {lastStatusMessage ? (
             <div className="mgStatus">{lastStatusMessage}</div>
           ) : null}
+          <div className="mgHeaderActions">
+            <button className="mgButton mgButton--small" onClick={downloadSessionTelemetryJson}>
+              Export session JSON
+            </button>
+            <button className="mgButton mgButton--small" onClick={clearSessionTelemetry}>
+              Clear session
+            </button>
+          </div>
         </div>
       </header>
 

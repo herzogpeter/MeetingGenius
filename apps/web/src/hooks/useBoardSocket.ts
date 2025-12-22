@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BoardState, IncomingMessage, OutgoingMessage, TranscriptEvent } from '../contracts'
 import { emptyBoardState } from '../contracts'
+import {
+  recordBoardActionsReceived,
+  recordConnectionStateChanged,
+  recordTranscriptEventSent,
+} from '../telemetry/sessionTelemetry'
 
 type ConnectionState = 'connecting' | 'open' | 'closed' | 'error'
 
@@ -23,13 +28,16 @@ export function useBoardSocket(): {
 
   const sendMessage = useCallback((message: OutgoingMessage) => {
     const socket = socketRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false
     socket.send(JSON.stringify(message))
+    return true
   }, [])
 
   const sendTranscriptEvent = useCallback(
     (event: TranscriptEvent) => {
-      sendMessage({ type: 'transcript_event', event })
+      if (sendMessage({ type: 'transcript_event', event })) {
+        recordTranscriptEventSent(event)
+      }
     },
     [sendMessage],
   )
@@ -40,19 +48,21 @@ export function useBoardSocket(): {
     setBoardState(emptyBoardState())
   }, [sendMessage])
 
-  const connect = useCallback(() => {
+  const connect = useCallback(function connectSocket() {
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
     }
 
     setConnectionState('connecting')
+    recordConnectionStateChanged('connecting')
     const socket = new WebSocket(WS_URL)
     socketRef.current = socket
 
     socket.addEventListener('open', () => {
       setConnectionState('open')
       setLastStatusMessage(null)
+      recordConnectionStateChanged('open')
     })
 
     socket.addEventListener('message', (event) => {
@@ -67,6 +77,7 @@ export function useBoardSocket(): {
         }
 
         if (message.type === 'board_actions') {
+          recordBoardActionsReceived(message)
           setBoardState(message.state ?? emptyBoardState())
           return
         }
@@ -77,13 +88,15 @@ export function useBoardSocket(): {
 
     socket.addEventListener('close', () => {
       setConnectionState('closed')
+      recordConnectionStateChanged('closed')
       if (shouldReconnectRef.current) {
-        reconnectTimerRef.current = window.setTimeout(() => connect(), 1000)
+        reconnectTimerRef.current = window.setTimeout(() => connectSocket(), 1000)
       }
     })
 
     socket.addEventListener('error', () => {
       setConnectionState('error')
+      recordConnectionStateChanged('error')
     })
   }, [])
 
