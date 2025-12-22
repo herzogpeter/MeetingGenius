@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Rnd } from 'react-rnd'
 import type { BoardState, Card, Rect } from '../contracts'
 import { ChartCardView } from './cards/ChartCardView'
@@ -28,10 +28,9 @@ function cardTitle(card: Card): string {
 export function Whiteboard(props: {
   boardState: BoardState
   dismissed: Set<string>
+  sendClientBoardAction: (action: unknown) => void
   onDismiss: (cardId: string) => void
 }) {
-  const [localRects, setLocalRects] = useState<Record<string, Rect>>({})
-
   const cards = useMemo(() => Object.values(props.boardState.cards ?? {}), [props.boardState.cards])
   const visibleCards = useMemo(
     () => cards.filter((c) => !props.dismissed.has(c.card_id)),
@@ -51,7 +50,7 @@ export function Whiteboard(props: {
 
         {visibleCards.map((card, idx) => {
           const serverRect = props.boardState.layout?.[card.card_id]
-          const rect = localRects[card.card_id] ?? serverRect ?? autoPlaceRect(idx)
+          const rect = serverRect ?? autoPlaceRect(idx)
 
           return (
             <Rnd
@@ -63,31 +62,32 @@ export function Whiteboard(props: {
               minWidth={260}
               minHeight={180}
               onDragStop={(_, data) => {
+                const newRect = { ...rect, x: data.x, y: data.y }
                 recordCardRectChanged({
                   interaction: 'drag',
                   cardId: card.card_id,
-                  rect: { ...rect, x: data.x, y: data.y },
+                  rect: newRect,
                 })
-                setLocalRects((prev) => {
-                  const existing = prev[card.card_id] ?? serverRect ?? autoPlaceRect(idx)
-                  return {
-                    ...prev,
-                    [card.card_id]: { ...existing, x: data.x, y: data.y },
-                  }
+                props.sendClientBoardAction({
+                  type: 'move_card',
+                  card_id: card.card_id,
+                  rect: newRect,
                 })
               }}
               onResizeStop={(_, __, ref, ___, position) => {
                 const width = ref.offsetWidth
                 const height = ref.offsetHeight
+                const newRect = { x: position.x, y: position.y, w: width, h: height }
                 recordCardRectChanged({
                   interaction: 'resize',
                   cardId: card.card_id,
-                  rect: { x: position.x, y: position.y, w: width, h: height },
+                  rect: newRect,
                 })
-                setLocalRects((prev) => ({
-                  ...prev,
-                  [card.card_id]: { x: position.x, y: position.y, w: width, h: height },
-                }))
+                props.sendClientBoardAction({
+                  type: 'move_card',
+                  card_id: card.card_id,
+                  rect: newRect,
+                })
               }}
             >
               <div className="mgCard">
@@ -100,6 +100,11 @@ export function Whiteboard(props: {
                     onClick={(e) => {
                       e.stopPropagation()
                       recordCardDismissed(card.card_id)
+                      props.sendClientBoardAction({
+                        type: 'dismiss_card',
+                        card_id: card.card_id,
+                        reason: 'user dismissed',
+                      })
                       props.onDismiss(card.card_id)
                     }}
                   >
