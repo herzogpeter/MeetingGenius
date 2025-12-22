@@ -43,6 +43,21 @@ uvicorn meetinggenius.server:app --reload --port 8000
 
 WebSocket endpoint: `ws://localhost:8000/ws`
 
+## Research tools (backend)
+
+Research is tool-driven and pluggable. A `ResearchTask` can be expressed generically as:
+
+- `tool_name`: string tool identifier
+- `args`: dict of tool arguments
+- `requires_browse`: bool (default `true`); blocked when `MEETINGGENIUS_NO_BROWSE=1`
+
+Legacy `ResearchTask.kind/query/location/month/years` fields are still supported for backward compatibility but are deprecated in favor of `tool_name` + `args`.
+
+Built-in tools:
+
+- `weather.history_by_month` — `{ location, month=12, years=10, unit="both" }` → `WeatherHistoryData`
+- `news.headlines_by_month` — `{ query, month=12, years=5, limit=8 }` → `HeadlinesData`
+
 ## Persistence (backend)
 
 The backend persists server state to SQLite so boards survive restarts and reconnecting clients converge.

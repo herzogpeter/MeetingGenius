@@ -331,6 +331,7 @@ class AIRunner:
         "",
         f"Default location: {default_location}",
         f"External browsing/research enabled: {not no_browse}",
+        "Meeting-native artifacts are ALWAYS allowed (decisions, action items, questions, risks/blockers, next steps) and do not require research tasks.",
         "Noise controls:",
         "- Prefer updating existing cards; avoid creating new ones unless it's a truly new topic.",
         "- The backend may throttle or convert `create_card` actions to reduce duplicates.",
@@ -357,7 +358,8 @@ class AIRunner:
       try:
         results.append(await run_research_task(task, no_browse=no_browse))
       except Exception as e:
-        await self._state.status(f"Research failed for {task.kind}: {e}")
+        label = task.tool_name or task.kind
+        await self._state.status(f"Research failed for {label}: {e}")
 
     await self._state.status("Running board planner…")
     planner = build_board_planner_agent(model)
@@ -379,6 +381,7 @@ class AIRunner:
         "- Prefer `update_card` over `create_card` when possible.",
         "- Creating new cards is rate-limited; some creates may be dropped.",
         "- Similar-title creates may be converted into updates.",
+        "- Meeting-native artifacts (decisions/actions/questions/risks/next steps) are always allowed even if external research is disabled; they should have sources=[] and no citations.",
         "",
         "Orchestrator decision (JSON):",
         decision.model_dump_json(indent=2),
