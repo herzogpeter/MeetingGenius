@@ -73,6 +73,13 @@ export type OutgoingMessage =
       years?: number
       month?: number
     }
+  | { type: 'export_board' }
+  | {
+      type: 'import_board'
+      state: BoardState
+      default_location?: string | null
+      no_browse?: boolean | null
+    }
   | { type: 'client_board_action'; action: unknown }
   | { type: 'run_ai' }
   | { type: 'reset' }
@@ -83,9 +90,22 @@ export type IncomingBoardActionsMessage = {
   state: BoardState
 }
 
+export type IncomingBoardExportMessage = {
+  type: 'board_export'
+  state: BoardState
+  default_location?: string
+  no_browse?: boolean
+}
+
 export type IncomingStatusMessage = { type: 'status'; message: string }
 
-export type IncomingMessage = IncomingBoardActionsMessage | IncomingStatusMessage
+export type IncomingErrorMessage = { type: 'error'; message: string; details?: unknown }
+
+export type IncomingMessage =
+  | IncomingBoardActionsMessage
+  | IncomingBoardExportMessage
+  | IncomingStatusMessage
+  | IncomingErrorMessage
 
 export const emptyBoardState = (): BoardState => ({
   cards: {},

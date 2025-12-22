@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { BoardState, IncomingMessage, OutgoingMessage, TranscriptEvent } from '../contracts'
+import type {
+  BoardState,
+  IncomingBoardExportMessage,
+  IncomingErrorMessage,
+  IncomingMessage,
+  OutgoingMessage,
+  TranscriptEvent,
+} from '../contracts'
 import { emptyBoardState } from '../contracts'
 import {
   recordBoardActionsReceived,
@@ -14,9 +21,17 @@ const WS_URL: string = (import.meta.env.VITE_WS_URL as string | undefined) ?? 'w
 export function useBoardSocket(): {
   connectionState: ConnectionState
   lastStatusMessage: string | null
+  lastError: IncomingErrorMessage | null
+  lastBoardExport: IncomingBoardExportMessage | null
   boardState: BoardState
   sendTranscriptEvent: (event: TranscriptEvent) => void
   sendSessionContext: (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) => boolean
+  sendExportBoard: () => boolean
+  sendImportBoard: (args: {
+    state: BoardState
+    defaultLocation?: string | null
+    noBrowse?: boolean | null
+  }) => boolean
   sendRunAi: () => boolean
   sendClientBoardAction: (action: unknown) => void
   sendReset: () => void
@@ -27,6 +42,8 @@ export function useBoardSocket(): {
 
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [lastStatusMessage, setLastStatusMessage] = useState<string | null>(null)
+  const [lastError, setLastError] = useState<IncomingErrorMessage | null>(null)
+  const [lastBoardExport, setLastBoardExport] = useState<IncomingBoardExportMessage | null>(null)
   const [boardState, setBoardState] = useState<BoardState>(() => emptyBoardState())
 
   const sendMessage = useCallback((message: OutgoingMessage) => {
@@ -57,6 +74,21 @@ export function useBoardSocket(): {
     [sendMessage],
   )
 
+  const sendExportBoard = useCallback(() => sendMessage({ type: 'export_board' }), [sendMessage])
+
+  const sendImportBoard = useCallback(
+    (args: { state: BoardState; defaultLocation?: string | null; noBrowse?: boolean | null }) => {
+      const payload: OutgoingMessage = {
+        type: 'import_board',
+        state: args.state,
+        ...(args.defaultLocation !== undefined ? { default_location: args.defaultLocation } : {}),
+        ...(args.noBrowse !== undefined ? { no_browse: args.noBrowse } : {}),
+      }
+      return sendMessage(payload)
+    },
+    [sendMessage],
+  )
+
   const sendRunAi = useCallback(() => sendMessage({ type: 'run_ai' }), [sendMessage])
 
   const sendClientBoardAction = useCallback((action: unknown) => {
@@ -83,6 +115,7 @@ export function useBoardSocket(): {
     socket.addEventListener('open', () => {
       setConnectionState('open')
       setLastStatusMessage(null)
+      setLastError(null)
       recordConnectionStateChanged('open')
     })
 
@@ -97,9 +130,20 @@ export function useBoardSocket(): {
           return
         }
 
+        if (message.type === 'error') {
+          setLastError(message)
+          setLastStatusMessage(message.message)
+          return
+        }
+
         if (message.type === 'board_actions') {
           recordBoardActionsReceived(message)
           setBoardState(message.state ?? emptyBoardState())
+          return
+        }
+
+        if (message.type === 'board_export') {
+          setLastBoardExport(message)
           return
         }
       } catch {
@@ -135,9 +179,13 @@ export function useBoardSocket(): {
     () => ({
       connectionState,
       lastStatusMessage,
+      lastError,
+      lastBoardExport,
       boardState,
       sendTranscriptEvent,
       sendSessionContext,
+      sendExportBoard,
+      sendImportBoard,
       sendRunAi,
       sendClientBoardAction,
       sendReset,
@@ -145,8 +193,12 @@ export function useBoardSocket(): {
     [
       boardState,
       connectionState,
+      lastBoardExport,
+      lastError,
       lastStatusMessage,
       sendClientBoardAction,
+      sendExportBoard,
+      sendImportBoard,
       sendReset,
       sendRunAi,
       sendSessionContext,

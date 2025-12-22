@@ -220,6 +220,33 @@ class RealtimeState:
       state = self.board_state
     return version, events, state
 
+  async def board_export_payload(self) -> dict[str, Any]:
+    async with self.state_lock:
+      payload: dict[str, Any] = {"type": "board_export", "state": _state_to_json(self.board_state)}
+      if self.default_location is not None:
+        payload["default_location"] = self.default_location
+      if self.no_browse_override is not None:
+        payload["no_browse"] = self.no_browse_override
+      return payload
+
+  async def replace_board_state(
+    self,
+    state: BoardState,
+    *,
+    has_default_location: bool,
+    default_location: str | None,
+    has_no_browse: bool,
+    no_browse: bool | None,
+  ) -> BoardState:
+    async with self.state_lock:
+      self.board_state = state
+      if has_default_location:
+        self.default_location = default_location
+      if has_no_browse:
+        self.no_browse_override = no_browse
+      self.version += 1
+      return self.board_state
+
   async def get_default_location(self) -> str | None:
     async with self.state_lock:
       return self.default_location
@@ -604,6 +631,83 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
       if msg_type == "reset":
         await STATE.reset()
+        continue
+
+      if msg_type == "export_board":
+        await ws.send_json(await STATE.board_export_payload())
+        continue
+
+      if msg_type == "import_board":
+        raw_state = data.get("state")
+        if not isinstance(raw_state, dict):
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid import_board payload.",
+              "details": {"state": "Expected JSON object."},
+            }
+          )
+          continue
+
+        try:
+          next_board_state = BoardState.model_validate(raw_state)
+        except ValidationError as e:
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid import_board payload.",
+              "details": {"errors": e.errors()},
+            }
+          )
+          continue
+
+        has_default_location = "default_location" in data
+        default_location: str | None = None
+        if has_default_location:
+          raw_location = data.get("default_location")
+          if raw_location is None:
+            default_location = None
+          elif isinstance(raw_location, str) and raw_location.strip():
+            default_location = raw_location.strip()
+          else:
+            await ws.send_json(
+              {
+                "type": "error",
+                "message": "Invalid import_board payload.",
+                "details": {"default_location": "Expected non-empty string or null."},
+              }
+            )
+            continue
+
+        has_no_browse = "no_browse" in data
+        no_browse: bool | None = None
+        if has_no_browse:
+          raw_no_browse = data.get("no_browse")
+          if raw_no_browse is None or isinstance(raw_no_browse, bool):
+            no_browse = raw_no_browse
+          else:
+            await ws.send_json(
+              {
+                "type": "error",
+                "message": "Invalid import_board payload.",
+                "details": {"no_browse": "Expected boolean or null."},
+              }
+            )
+            continue
+
+        imported_state = await STATE.replace_board_state(
+          next_board_state,
+          has_default_location=has_default_location,
+          default_location=default_location,
+          has_no_browse=has_no_browse,
+          no_browse=no_browse,
+        )
+
+        if PERSISTOR is not None:
+          await PERSISTOR.save_now()
+
+        await STATE.status("Board imported.")
+        await STATE.broadcast({"type": "board_actions", "actions": [], "state": _state_to_json(imported_state)})
         continue
 
       if msg_type == "transcript_event":

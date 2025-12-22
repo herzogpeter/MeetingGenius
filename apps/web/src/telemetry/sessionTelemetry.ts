@@ -58,6 +58,27 @@ type SessionTelemetryEvent =
       type: 'run_ai_clicked'
       ts: string
     }
+  | {
+      type: 'board_export_requested'
+      ts: string
+    }
+  | {
+      type: 'board_export_downloaded'
+      ts: string
+      filename: string
+    }
+  | {
+      type: 'board_import_sent'
+      ts: string
+      filename?: string
+    }
+  | {
+      type: 'board_import_error'
+      ts: string
+      stage: 'parse' | 'send' | 'server'
+      message: string
+      filename?: string
+    }
 
 export type SessionTelemetryExport = {
   session_id: string
@@ -209,4 +230,24 @@ export function recordRefreshLastRequestClicked(args: {
 
 export function recordRunAiClicked(): void {
   pushEvent({ type: 'run_ai_clicked', ts: nowIso() })
+}
+
+export function recordBoardExportRequested(): void {
+  pushEvent({ type: 'board_export_requested', ts: nowIso() })
+}
+
+export function recordBoardExportDownloaded(filename: string): void {
+  pushEvent({ type: 'board_export_downloaded', ts: nowIso(), filename })
+}
+
+export function recordBoardImportSent(filename?: string): void {
+  pushEvent({ type: 'board_import_sent', ts: nowIso(), filename })
+}
+
+export function recordBoardImportError(args: {
+  stage: 'parse' | 'send' | 'server'
+  message: string
+  filename?: string
+}): void {
+  pushEvent({ type: 'board_import_error', ts: nowIso(), stage: args.stage, message: args.message, filename: args.filename })
 }

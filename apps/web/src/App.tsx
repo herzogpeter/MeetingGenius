@@ -1,13 +1,17 @@
 import './App.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TranscriptPanel } from './components/TranscriptPanel'
 import { Whiteboard } from './components/Whiteboard'
-import type { TranscriptEvent } from './contracts'
+import type { BoardState, TranscriptEvent } from './contracts'
 import { useBoardSocket } from './hooks/useBoardSocket'
 import {
   clearSessionTelemetry,
   downloadSessionTelemetryJson,
   recordAssumptionsChanged,
+  recordBoardExportDownloaded,
+  recordBoardExportRequested,
+  recordBoardImportError,
+  recordBoardImportSent,
   recordRefreshLastRequestClicked,
   recordRunAiClicked,
 } from './telemetry/sessionTelemetry'
@@ -29,6 +33,29 @@ function parseBool(raw: string | null): boolean | null {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false
   return null
+}
+
+function nowIsoForFilename(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function downloadJsonFile(payload: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function looksLikeBoardState(value: unknown): value is BoardState {
+  if (!isPlainObject(value)) return false
+  return isPlainObject(value.cards) && isPlainObject(value.layout) && isPlainObject(value.dismissed)
 }
 
 function App() {
@@ -56,13 +83,20 @@ function App() {
   const [clientStatusMessage, setClientStatusMessage] = useState<string | null>(null)
   const clearStatusTimerRef = useRef<number | null>(null)
   const initialContextSentRef = useRef(false)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingImportRef = useRef<{ filename?: string } | null>(null)
+  const pendingImportTimerRef = useRef<number | null>(null)
 
   const {
     connectionState,
     lastStatusMessage,
+    lastError,
+    lastBoardExport,
     boardState,
     sendTranscriptEvent,
     sendSessionContext,
+    sendExportBoard,
+    sendImportBoard,
     sendRunAi,
     sendClientBoardAction,
     sendReset,
@@ -87,6 +121,7 @@ function App() {
   useEffect(() => {
     return () => {
       if (clearStatusTimerRef.current) window.clearTimeout(clearStatusTimerRef.current)
+      if (pendingImportTimerRef.current) window.clearTimeout(pendingImportTimerRef.current)
     }
   }, [])
 
@@ -108,13 +143,29 @@ function App() {
 
   const statusMessage = clientStatusMessage ?? lastStatusMessage
 
-  const showClientStatus = (message: string) => {
+  const showClientStatus = useCallback((message: string) => {
     setClientStatusMessage(message)
     if (clearStatusTimerRef.current) window.clearTimeout(clearStatusTimerRef.current)
     clearStatusTimerRef.current = window.setTimeout(() => {
       setClientStatusMessage(null)
     }, 3000)
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!lastBoardExport) return
+    const filename = `meetinggenius-board-${nowIsoForFilename()}.json`
+    downloadJsonFile(lastBoardExport, filename)
+    recordBoardExportDownloaded(filename)
+    showClientStatus(`Board exported: ${filename}`)
+  }, [lastBoardExport, showClientStatus])
+
+  useEffect(() => {
+    if (!lastError) return
+    const pending = pendingImportRef.current
+    if (!pending) return
+    recordBoardImportError({ stage: 'server', message: lastError.message, filename: pending.filename })
+    pendingImportRef.current = null
+  }, [lastError])
 
   const applyLocation = () => {
     const nextLocation = locationDraft.trim()
@@ -168,6 +219,70 @@ function App() {
     sendRunAi()
   }
 
+  const exportBoard = () => {
+    if (connectionState !== 'open') return
+    recordBoardExportRequested()
+    const sent = sendExportBoard()
+    if (sent) showClientStatus('Exporting board…')
+  }
+
+  const onImportFileSelected = async (file: File) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await file.text()) as unknown
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Invalid JSON'
+      recordBoardImportError({ stage: 'parse', message, filename: file.name })
+      showClientStatus(`Import failed: ${message}`)
+      return
+    }
+
+    let boardStateCandidate: unknown = parsed
+    let defaultLocationFromFile: string | null | undefined
+    let noBrowseFromFile: boolean | null | undefined
+
+    if (isPlainObject(parsed) && parsed.type === 'board_export') {
+      boardStateCandidate = parsed.state
+      if ('default_location' in parsed) defaultLocationFromFile = parsed.default_location as string | null | undefined
+      if ('no_browse' in parsed) noBrowseFromFile = parsed.no_browse as boolean | null | undefined
+    }
+
+    if (!looksLikeBoardState(boardStateCandidate)) {
+      recordBoardImportError({ stage: 'parse', message: 'Unrecognized board export format', filename: file.name })
+      showClientStatus('Import failed: unrecognized board export format')
+      return
+    }
+
+    const sent = sendImportBoard({
+      state: boardStateCandidate,
+      ...(defaultLocationFromFile !== undefined ? { defaultLocation: defaultLocationFromFile } : {}),
+      ...(noBrowseFromFile !== undefined ? { noBrowse: noBrowseFromFile } : {}),
+    })
+    if (!sent) {
+      recordBoardImportError({ stage: 'send', message: 'WebSocket not connected', filename: file.name })
+      showClientStatus('Import failed: WebSocket not connected')
+      return
+    }
+
+    recordBoardImportSent(file.name)
+    pendingImportRef.current = { filename: file.name }
+    if (pendingImportTimerRef.current) window.clearTimeout(pendingImportTimerRef.current)
+    pendingImportTimerRef.current = window.setTimeout(() => {
+      pendingImportRef.current = null
+      pendingImportTimerRef.current = null
+    }, 5000)
+
+    if (typeof defaultLocationFromFile === 'string' && defaultLocationFromFile.trim()) {
+      setLocation(defaultLocationFromFile.trim())
+      setLocationDraft(defaultLocationFromFile.trim())
+    }
+    if (typeof noBrowseFromFile === 'boolean') {
+      setNoBrowse(noBrowseFromFile)
+    }
+
+    showClientStatus(`Import sent: ${file.name}`)
+  }
+
   return (
     <div className="mgApp">
       <header className="mgHeader">
@@ -180,12 +295,34 @@ function App() {
               <button className="mgButton mgButton--small" disabled={connectionState !== 'open'} onClick={runAiNow}>
                 Run AI now
               </button>
+              <button className="mgButton mgButton--small" disabled={connectionState !== 'open'} onClick={exportBoard}>
+                Export board
+              </button>
+              <button
+                className="mgButton mgButton--small"
+                disabled={connectionState !== 'open'}
+                onClick={() => importInputRef.current?.click()}
+              >
+                Import board
+              </button>
               <button className="mgButton mgButton--small" onClick={downloadSessionTelemetryJson}>
                 Export session JSON
               </button>
               <button className="mgButton mgButton--small" onClick={clearSessionTelemetry}>
                 Clear session
               </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!file) return
+                  void onImportFileSelected(file)
+                }}
+              />
             </div>
           </div>
 
