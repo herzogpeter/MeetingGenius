@@ -1,0 +1,43 @@
+{
+  "type": "board_export",
+  "state": {
+    "cards": {
+      "demo-list": {
+        "card_id": "demo-list",
+        "kind": "list",
+        "props": {
+          "title": "Demo: Action items",
+          "items": [
+            { "text": "Align on demo narrative" },
+            { "text": "Export board → import board" },
+            { "text": "Share JSON with team" }
+          ]
+        },
+        "sources": []
+      },
+      "demo-chart": {
+        "card_id": "demo-chart",
+        "kind": "chart",
+        "props": {
+          "title": "Demo: Weekly progress",
+          "subtitle": "Synthetic data",
+          "x_label": "Week",
+          "y_label": "Points",
+          "points": [
+            { "label": "W1", "value": 3 },
+            { "label": "W2", "value": 5 },
+            { "label": "W3", "value": 8 }
+          ]
+        },
+        "sources": []
+      }
+    },
+    "layout": {
+      "demo-list": { "x": 40, "y": 40, "w": 420, "h": 240 },
+      "demo-chart": { "x": 500, "y": 40, "w": 520, "h": 300 }
+    },
+    "dismissed": {}
+  },
+  "default_location": "Seattle",
+  "no_browse": false
+}

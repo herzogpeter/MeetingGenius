@@ -128,6 +128,15 @@ class DebouncedStatePersister:
       self._ensure_task_locked()
       self._event.set()
 
+  async def save_now(self) -> None:
+    board_state, default_location, no_browse = await self.snapshot_provider()
+    payload = {
+      BOARD_STATE_KEY: dump_board_state(board_state),
+      DEFAULT_LOCATION_KEY: dump_default_location(default_location),
+      NO_BROWSE_KEY: dump_no_browse(no_browse),
+    }
+    await asyncio.to_thread(self.store.set_many, payload)
+
   def _ensure_task_locked(self) -> None:
     if self._task is None or self._task.done():
       self._task = asyncio.create_task(self._run_loop())
