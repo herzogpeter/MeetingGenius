@@ -17,7 +17,12 @@ from meetinggenius.board.reducer import apply_action
 from meetinggenius.contracts import (
   BoardAction,
   BoardState,
+  CardKind,
   CreateCardAction,
+  ListItem,
+  ListCard,
+  ListCardProps,
+  Rect,
   ToolingPolicy,
   TranscriptEvent,
   UpdateCardAction,
@@ -40,6 +45,132 @@ app = FastAPI(title="MeetingGenius Realtime Backend")
 
 PERSIST_STORE: SQLiteKVStore | None = None
 PERSISTOR: DebouncedStatePersister | None = None
+
+MEETING_NATIVE_BASE_LIST_CARDS: tuple[tuple[str, str], ...] = (
+  ("list-decisions", "Decisions"),
+  ("list-actions", "Action Items"),
+  ("list-questions", "Open Questions"),
+  ("list-risks", "Risks / Blockers"),
+  ("list-next-steps", "Next Steps"),
+)
+MEETING_NATIVE_BASE_LIST_CARD_IDS = {card_id for card_id, _ in MEETING_NATIVE_BASE_LIST_CARDS}
+
+
+def _meeting_native_seed_rect(index: int) -> Rect:
+  # Mirror the frontend's 2-column auto layout.
+  gutter = 16
+  w = 420
+  h = 280
+  col_width = w + gutter
+  row_height = h + gutter
+  col = index % 2
+  row = index // 2
+  return Rect(x=gutter + col * col_width, y=gutter + row * row_height, w=w, h=h)
+
+
+def _meeting_native_seed_actions(board_state: BoardState, actions: list[BoardAction]) -> list[CreateCardAction]:
+  if board_state.cards:
+    return []
+
+  create_ids = {action.card.card_id for action in actions if isinstance(action, CreateCardAction)}
+  seeded: list[CreateCardAction] = []
+  for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
+    if card_id in create_ids:
+      continue
+    if card_id in board_state.dismissed:
+      continue
+    seeded.append(
+      CreateCardAction(
+        card=ListCard(
+          card_id=card_id,
+          kind=CardKind.LIST,
+          props=ListCardProps(title=title, items=[]),
+          sources=[],
+        ),
+        rect=_meeting_native_seed_rect(idx),
+      )
+    )
+  return seeded
+
+
+def _normalize_list_item_text(value: str) -> str:
+  cleaned = value.strip().lower()
+  cleaned = re.sub(r"^[\s\-\*\u2022\d\)\.]+", "", cleaned)
+  cleaned = re.sub(r"\s+", " ", cleaned).strip()
+  cleaned = cleaned.strip(" \t\r\n.;")
+  return cleaned
+
+
+def _extract_meeting_native_items(events: list[TranscriptEvent]) -> dict[str, list[str]]:
+  buckets: dict[str, list[str]] = {card_id: [] for card_id, _ in MEETING_NATIVE_BASE_LIST_CARDS}
+
+  patterns: list[tuple[str, re.Pattern[str]]] = [
+    ("list-decisions", re.compile(r"^\s*(?:decision|decisions)\s*[:\-–]\s*(.+)$", re.IGNORECASE)),
+    ("list-actions", re.compile(r"^\s*(?:action item|action items|action)\s*[:\-–]\s*(.+)$", re.IGNORECASE)),
+    ("list-questions", re.compile(r"^\s*(?:open question|open questions|question|questions)\s*[:\-–]\s*(.+)$", re.IGNORECASE)),
+    ("list-risks", re.compile(r"^\s*(?:risk|risks|blocker|blockers|risk\s*/\s*blocker)\s*[:\-–]\s*(.+)$", re.IGNORECASE)),
+    ("list-next-steps", re.compile(r"^\s*(?:next step|next steps)\s*[:\-–]\s*(.+)$", re.IGNORECASE)),
+  ]
+
+  for event in events:
+    text = event.text or ""
+    if not text.strip():
+      continue
+    for raw_line in text.splitlines():
+      line = raw_line.strip()
+      if not line:
+        continue
+      for card_id, pattern in patterns:
+        match = pattern.match(line)
+        if not match:
+          continue
+        item = match.group(1).strip()
+        if item:
+          buckets[card_id].append(item)
+        break
+
+  return {card_id: items for card_id, items in buckets.items() if items}
+
+
+def _meeting_native_update_actions(
+  board_state: BoardState, items_by_card_id: dict[str, list[str]], *, max_new_items: int = 5
+) -> list[UpdateCardAction]:
+  remaining = max(0, max_new_items)
+  if remaining == 0:
+    return []
+
+  updates: list[UpdateCardAction] = []
+  for card_id in (cid for cid, _ in MEETING_NATIVE_BASE_LIST_CARDS):
+    if remaining <= 0:
+      break
+    items = items_by_card_id.get(card_id) or []
+    if not items:
+      continue
+
+    existing = board_state.cards.get(card_id)
+    if existing is None or getattr(existing, "kind", None) != CardKind.LIST:
+      continue
+
+    existing_items: list[ListItem] = list(getattr(getattr(existing, "props", None), "items", []) or [])
+    existing_norm = {_normalize_list_item_text(i.text) for i in existing_items if getattr(i, "text", None)}
+    next_items = [i.model_dump(mode="python") for i in existing_items]
+
+    added = 0
+    for raw in items:
+      if remaining <= 0:
+        break
+      normalized = _normalize_list_item_text(raw)
+      if not normalized or normalized in existing_norm:
+        continue
+      next_items.append(ListItem(text=raw.strip()).model_dump(mode="python"))
+      existing_norm.add(normalized)
+      added += 1
+      remaining -= 1
+
+    if added:
+      updates.append(UpdateCardAction(card_id=card_id, patch={"props": {"items": next_items}}, citations=None))
+
+  return updates
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -335,14 +466,49 @@ class AIRunner:
     if not events:
       return
 
-    await self._state.status("Running orchestrator…")
-
     model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
     session_location = await self._state.get_default_location()
     default_location = session_location or (os.getenv("MEETINGGENIUS_DEFAULT_LOCATION") or "Seattle")
     session_no_browse = await self._state.get_no_browse_override()
     no_browse = session_no_browse if session_no_browse is not None else _env_bool("MEETINGGENIUS_NO_BROWSE", False)
     policy = ToolingPolicy(no_browse=no_browse)
+
+    offline_meeting_native = _env_bool("MEETINGGENIUS_OFFLINE_MEETING_NATIVE", False) or model == "test"
+    if offline_meeting_native:
+      seed_actions = _meeting_native_seed_actions(board_state, [])
+      post_process_state = board_state
+      for action in seed_actions:
+        post_process_state = apply_action(post_process_state, action)
+
+      items_by_card_id = _extract_meeting_native_items(events)
+      update_actions = _meeting_native_update_actions(post_process_state, items_by_card_id)
+      actions: list[BoardAction] = [*seed_actions, *update_actions]
+      if not actions:
+        return
+
+      processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
+        post_process_state, actions
+      )
+      next_state = await self._state.apply_board_actions(expected_version=version, actions=processed_actions)
+      if next_state is None:
+        await self._state.status("Discarded meeting-native result (state changed).")
+        return
+
+      self._create_timestamps = next_timestamps
+      self._last_create_at = next_last_create
+      if throttle_msg:
+        await self._state.status(throttle_msg)
+
+      await self._state.broadcast(
+        {
+          "type": "board_actions",
+          "actions": _actions_to_json(processed_actions),
+          "state": _state_to_json(next_state),
+        }
+      )
+      return
+
+    await self._state.status("Running orchestrator…")
 
     try:
       from meetinggenius.agents.board_planner import BoardPlannerDeps, build_board_planner_agent
@@ -445,8 +611,15 @@ class AIRunner:
       lambda: planner.run_sync(planner_prompt, deps=planner_deps).output
     )
 
+    seed_actions = _meeting_native_seed_actions(board_state, actions)
+    post_process_state = board_state
+    if seed_actions:
+      actions = seed_actions + actions
+      for action in seed_actions:
+        post_process_state = apply_action(post_process_state, action)
+
     processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
-      board_state, actions
+      post_process_state, actions
     )
 
     if no_browse:
@@ -502,6 +675,9 @@ class AIRunner:
 
     deduped: list[BoardAction] = []
     for action in actions:
+      if isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+        deduped.append(action)
+        continue
       if not dedupe_enabled or not isinstance(action, CreateCardAction):
         deduped.append(action)
         continue
@@ -537,6 +713,9 @@ class AIRunner:
     throttled = 0
     output: list[BoardAction] = []
     for action in deduped:
+      if isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+        output.append(action)
+        continue
       if not isinstance(action, CreateCardAction):
         output.append(action)
         continue

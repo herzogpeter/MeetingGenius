@@ -36,3 +36,9 @@ htmlcov/
 **/node_modules/
 **/dist/
 **/dist-ssr/
+
+# Local persistence DBs
+meetinggenius.sqlite3
+meetinggenius.sqlite3-*
+*.sqlite3
+*.sqlite3-*
