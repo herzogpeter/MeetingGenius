@@ -28,6 +28,8 @@ Optional:
 
 - `MEETINGGENIUS_MODEL` (e.g. `anthropic:claude-3-5-sonnet-latest`)
 - `MEETINGGENIUS_DEFAULT_LOCATION` (default: `Seattle`)
+- `MEETINGGENIUS_DB_PATH` (default: `./meetinggenius.sqlite3` in the repo root)
+- `MEETINGGENIUS_PERSIST_DEBOUNCE_SECONDS` (default: `1.25`)
 - `MEETINGGENIUS_NO_BROWSE=1` (disables external research tools)
 - `MEETINGGENIUS_MAX_CREATE_CARDS_PER_MINUTE` (default: `2`)
 - `MEETINGGENIUS_MIN_SECONDS_BETWEEN_CREATES` (default: `20`)
@@ -40,6 +42,15 @@ uvicorn meetinggenius.server:app --reload --port 8000
 ```
 
 WebSocket endpoint: `ws://localhost:8000/ws`
+
+## Persistence (backend)
+
+The backend persists server state to SQLite so boards survive restarts and reconnecting clients converge.
+
+- Stored in a single SQLite table `kv(key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT)`.
+- Keys: `board_state` (cards/layout/dismissed) and `default_location` (session context).
+- Writes are debounced (flush at most once every ~`MEETINGGENIUS_PERSIST_DEBOUNCE_SECONDS` seconds).
+- Sending `{"type":"reset"}` clears the in-memory state and deletes the persisted keys.
 
 ### WebSocket messages
 
