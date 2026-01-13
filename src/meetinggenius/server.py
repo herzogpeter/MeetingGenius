@@ -69,13 +69,24 @@ def _meeting_native_seed_rect(index: int) -> Rect:
 
 
 def _meeting_native_seed_actions(board_state: BoardState, actions: list[BoardAction]) -> list[CreateCardAction]:
-  if board_state.cards:
+  create_ids = {action.card.card_id for action in actions if isinstance(action, CreateCardAction)}
+  referenced_ids: set[str] = set()
+  for action in actions:
+    if isinstance(action, UpdateCardAction) and action.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+      referenced_ids.add(action.card_id)
+    elif isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+      referenced_ids.add(action.card.card_id)
+
+  if not referenced_ids:
     return []
 
-  create_ids = {action.card.card_id for action in actions if isinstance(action, CreateCardAction)}
   seeded: list[CreateCardAction] = []
   for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
+    if card_id not in referenced_ids:
+      continue
     if card_id in create_ids:
+      continue
+    if card_id in board_state.cards:
       continue
     if card_id in board_state.dismissed:
       continue
@@ -475,14 +486,74 @@ class AIRunner:
 
     offline_meeting_native = _env_bool("MEETINGGENIUS_OFFLINE_MEETING_NATIVE", False) or model == "test"
     if offline_meeting_native:
-      seed_actions = _meeting_native_seed_actions(board_state, [])
-      post_process_state = board_state
-      for action in seed_actions:
-        post_process_state = apply_action(post_process_state, action)
-
       items_by_card_id = _extract_meeting_native_items(events)
-      update_actions = _meeting_native_update_actions(post_process_state, items_by_card_id)
-      actions: list[BoardAction] = [*seed_actions, *update_actions]
+      remaining = 5
+      actions: list[BoardAction] = []
+      post_process_state = board_state
+      for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
+        if remaining <= 0:
+          break
+        if card_id in board_state.dismissed:
+          continue
+
+        items = items_by_card_id.get(card_id) or []
+        if not items:
+          continue
+
+        existing = post_process_state.cards.get(card_id)
+        if existing is None:
+          seen: set[str] = set()
+          seed_items: list[ListItem] = []
+          for raw in items:
+            if remaining <= 0:
+              break
+            normalized = _normalize_list_item_text(raw)
+            if not normalized or normalized in seen:
+              continue
+            seen.add(normalized)
+            seed_items.append(ListItem(text=raw.strip()))
+            remaining -= 1
+
+          if not seed_items:
+            continue
+
+          create = CreateCardAction(
+            card=ListCard(
+              card_id=card_id,
+              kind=CardKind.LIST,
+              props=ListCardProps(title=title, items=seed_items),
+              sources=[],
+            ),
+            rect=_meeting_native_seed_rect(idx),
+          )
+          actions.append(create)
+          post_process_state = apply_action(post_process_state, create)
+          continue
+
+        if getattr(existing, "kind", None) != CardKind.LIST:
+          continue
+
+        existing_items: list[ListItem] = list(getattr(getattr(existing, "props", None), "items", []) or [])
+        existing_norm = {_normalize_list_item_text(i.text) for i in existing_items if getattr(i, "text", None)}
+        next_items = [i.model_dump(mode="python") for i in existing_items]
+
+        added = 0
+        for raw in items:
+          if remaining <= 0:
+            break
+          normalized = _normalize_list_item_text(raw)
+          if not normalized or normalized in existing_norm:
+            continue
+          next_items.append(ListItem(text=raw.strip()).model_dump(mode="python"))
+          existing_norm.add(normalized)
+          added += 1
+          remaining -= 1
+
+        if added:
+          update = UpdateCardAction(card_id=card_id, patch={"props": {"items": next_items}}, citations=None)
+          actions.append(update)
+          post_process_state = apply_action(post_process_state, update)
+
       if not actions:
         return
 
