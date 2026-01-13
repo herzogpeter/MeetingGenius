@@ -14,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import TypeAdapter, ValidationError
 
 from meetinggenius.board.reducer import apply_action
+from meetinggenius.agents.orchestrator import MEETING_NATIVE_LIST_CARD_IDS
 from meetinggenius.contracts import (
   BoardAction,
   BoardState,
@@ -53,7 +54,7 @@ MEETING_NATIVE_BASE_LIST_CARDS: tuple[tuple[str, str], ...] = (
   ("list-risks", "Risks / Blockers"),
   ("list-next-steps", "Next Steps"),
 )
-MEETING_NATIVE_BASE_LIST_CARD_IDS = {card_id for card_id, _ in MEETING_NATIVE_BASE_LIST_CARDS}
+MEETING_NATIVE_BASE_LIST_CARD_IDS = MEETING_NATIVE_LIST_CARD_IDS
 
 
 def _meeting_native_seed_rect(index: int) -> Rect:
@@ -182,6 +183,68 @@ def _meeting_native_update_actions(
       updates.append(UpdateCardAction(card_id=card_id, patch={"props": {"items": next_items}}, citations=None))
 
   return updates
+
+
+def _meeting_native_create_or_update_actions(
+  board_state: BoardState, items_by_card_id: dict[str, list[str]], *, max_new_items: int = 5
+) -> tuple[list[BoardAction], BoardState]:
+  remaining = max(0, max_new_items)
+  if remaining == 0:
+    return [], board_state
+
+  actions: list[BoardAction] = []
+  next_state = board_state
+
+  for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
+    if remaining <= 0:
+      break
+    if card_id in board_state.dismissed:
+      continue
+
+    items = items_by_card_id.get(card_id) or []
+    if not items:
+      continue
+
+    if card_id in next_state.cards:
+      continue
+
+    seen: set[str] = set()
+    seed_items: list[ListItem] = []
+    for raw in items:
+      if remaining <= 0:
+        break
+      normalized = _normalize_list_item_text(raw)
+      if not normalized or normalized in seen:
+        continue
+      seen.add(normalized)
+      seed_items.append(ListItem(text=raw.strip()))
+      remaining -= 1
+
+    if not seed_items:
+      continue
+
+    create = CreateCardAction(
+      card=ListCard(
+        card_id=card_id,
+        kind=CardKind.LIST,
+        props=ListCardProps(title=title, items=seed_items),
+        sources=[],
+      ),
+      rect=_meeting_native_seed_rect(idx),
+    )
+    actions.append(create)
+    next_state = apply_action(next_state, create)
+
+  if remaining <= 0:
+    return actions, next_state
+
+  filtered = {cid: items for cid, items in items_by_card_id.items() if items and cid not in board_state.dismissed}
+  updates = _meeting_native_update_actions(next_state, filtered, max_new_items=remaining)
+  for update in updates:
+    actions.append(update)
+    next_state = apply_action(next_state, update)
+
+  return actions, next_state
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -487,72 +550,7 @@ class AIRunner:
     offline_meeting_native = _env_bool("MEETINGGENIUS_OFFLINE_MEETING_NATIVE", False) or model == "test"
     if offline_meeting_native:
       items_by_card_id = _extract_meeting_native_items(events)
-      remaining = 5
-      actions: list[BoardAction] = []
-      post_process_state = board_state
-      for idx, (card_id, title) in enumerate(MEETING_NATIVE_BASE_LIST_CARDS):
-        if remaining <= 0:
-          break
-        if card_id in board_state.dismissed:
-          continue
-
-        items = items_by_card_id.get(card_id) or []
-        if not items:
-          continue
-
-        existing = post_process_state.cards.get(card_id)
-        if existing is None:
-          seen: set[str] = set()
-          seed_items: list[ListItem] = []
-          for raw in items:
-            if remaining <= 0:
-              break
-            normalized = _normalize_list_item_text(raw)
-            if not normalized or normalized in seen:
-              continue
-            seen.add(normalized)
-            seed_items.append(ListItem(text=raw.strip()))
-            remaining -= 1
-
-          if not seed_items:
-            continue
-
-          create = CreateCardAction(
-            card=ListCard(
-              card_id=card_id,
-              kind=CardKind.LIST,
-              props=ListCardProps(title=title, items=seed_items),
-              sources=[],
-            ),
-            rect=_meeting_native_seed_rect(idx),
-          )
-          actions.append(create)
-          post_process_state = apply_action(post_process_state, create)
-          continue
-
-        if getattr(existing, "kind", None) != CardKind.LIST:
-          continue
-
-        existing_items: list[ListItem] = list(getattr(getattr(existing, "props", None), "items", []) or [])
-        existing_norm = {_normalize_list_item_text(i.text) for i in existing_items if getattr(i, "text", None)}
-        next_items = [i.model_dump(mode="python") for i in existing_items]
-
-        added = 0
-        for raw in items:
-          if remaining <= 0:
-            break
-          normalized = _normalize_list_item_text(raw)
-          if not normalized or normalized in existing_norm:
-            continue
-          next_items.append(ListItem(text=raw.strip()).model_dump(mode="python"))
-          existing_norm.add(normalized)
-          added += 1
-          remaining -= 1
-
-        if added:
-          update = UpdateCardAction(card_id=card_id, patch={"props": {"items": next_items}}, citations=None)
-          actions.append(update)
-          post_process_state = apply_action(post_process_state, update)
+      actions, post_process_state = _meeting_native_create_or_update_actions(board_state, items_by_card_id, max_new_items=5)
 
       if not actions:
         return
@@ -688,6 +686,22 @@ class AIRunner:
       actions = seed_actions + actions
       for action in seed_actions:
         post_process_state = apply_action(post_process_state, action)
+
+    items_by_card_id = _extract_meeting_native_items(events)
+    if items_by_card_id:
+      pre_fallback_state = post_process_state
+      for action in actions:
+        if isinstance(action, CreateCardAction) and action.card.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+          pre_fallback_state = apply_action(pre_fallback_state, action)
+        elif isinstance(action, UpdateCardAction) and action.card_id in MEETING_NATIVE_BASE_LIST_CARD_IDS:
+          pre_fallback_state = apply_action(pre_fallback_state, action)
+
+      fallback_actions, fallback_state = _meeting_native_create_or_update_actions(
+        pre_fallback_state, items_by_card_id, max_new_items=5
+      )
+      if fallback_actions:
+        actions = actions + fallback_actions
+        post_process_state = fallback_state
 
     processed_actions, throttle_msg, next_timestamps, next_last_create = self._post_process_actions(
       post_process_state, actions
