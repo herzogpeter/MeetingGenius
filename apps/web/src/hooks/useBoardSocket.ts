@@ -17,7 +17,10 @@ import {
 
 type ConnectionState = 'connecting' | 'open' | 'closed' | 'error'
 
-const WS_URL: string = (import.meta.env.VITE_WS_URL as string | undefined) ?? 'ws://localhost:8000/ws'
+const DEFAULT_WS_HOST =
+  window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname
+const WS_URL: string =
+  (import.meta.env.VITE_WS_URL as string | undefined) ?? `ws://${DEFAULT_WS_HOST}:8000/ws`
 
 export function useBoardSocket(): {
   connectionState: ConnectionState
