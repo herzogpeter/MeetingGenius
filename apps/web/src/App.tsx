@@ -1,5 +1,6 @@
 import './App.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Mindmap } from './components/Mindmap'
 import { TranscriptPanel } from './components/TranscriptPanel'
 import { Whiteboard } from './components/Whiteboard'
 import type { BoardState, TranscriptEvent } from './contracts'
@@ -18,6 +19,8 @@ import {
 
 const YEARS_STORAGE_KEY = 'mg.assumptions.years'
 const NO_BROWSE_STORAGE_KEY = 'mg.assumptions.noBrowse'
+const MINDMAP_AI_STORAGE_KEY = 'mg.assumptions.mindmapAi'
+const VIEW_MODE_STORAGE_KEY = 'mg.viewMode'
 const YEAR_OPTIONS = [5, 10, 15] as const
 
 function parseYears(raw: string | null): number | null {
@@ -61,6 +64,14 @@ function looksLikeBoardState(value: unknown): value is BoardState {
 function App() {
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([])
   const [locallyDismissed, setLocallyDismissed] = useState<Set<string>>(() => new Set())
+  const [viewMode, setViewMode] = useState<'whiteboard' | 'mindmap'>(() => {
+    try {
+      const raw = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY)
+      return raw === 'mindmap' ? 'mindmap' : 'whiteboard'
+    } catch {
+      return 'whiteboard'
+    }
+  })
   const [location, setLocation] = useState<string>('Seattle')
   const [locationDraft, setLocationDraft] = useState<string>('Seattle')
   const [years, setYears] = useState<number>(() => {
@@ -75,6 +86,13 @@ function App() {
       return parseBool(window.localStorage.getItem(NO_BROWSE_STORAGE_KEY)) ?? false
     } catch {
       return false
+    }
+  })
+  const [mindmapAi, setMindmapAi] = useState<boolean>(() => {
+    try {
+      return parseBool(window.localStorage.getItem(MINDMAP_AI_STORAGE_KEY)) ?? true
+    } catch {
+      return true
     }
   })
   const [lastFinalTranscriptEventSent, setLastFinalTranscriptEventSent] = useState<TranscriptEvent | null>(
@@ -93,12 +111,15 @@ function App() {
     lastError,
     lastBoardExport,
     boardState,
+    mindmapState,
+    mindmapStatus,
     sendTranscriptEvent,
     sendSessionContext,
     sendExportBoard,
     sendImportBoard,
     sendRunAi,
     sendClientBoardAction,
+    sendClientMindmapAction,
     sendReset,
   } = useBoardSocket()
 
@@ -119,6 +140,22 @@ function App() {
   }, [noBrowse])
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(MINDMAP_AI_STORAGE_KEY, String(mindmapAi))
+    } catch {
+      // ignore local storage failures
+    }
+  }, [mindmapAi])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode)
+    } catch {
+      // ignore local storage failures
+    }
+  }, [viewMode])
+
+  useEffect(() => {
     return () => {
       if (clearStatusTimerRef.current) window.clearTimeout(clearStatusTimerRef.current)
       if (pendingImportTimerRef.current) window.clearTimeout(pendingImportTimerRef.current)
@@ -131,9 +168,9 @@ function App() {
       return
     }
     if (initialContextSentRef.current) return
-    const sent = sendSessionContext({ defaultLocation: location, noBrowse, years })
+    const sent = sendSessionContext({ defaultLocation: location, noBrowse, years, mindmapAi })
     if (sent) initialContextSentRef.current = true
-  }, [connectionState, location, noBrowse, sendSessionContext, years])
+  }, [connectionState, location, mindmapAi, noBrowse, sendSessionContext, years])
 
   const effectiveDismissed = useMemo(() => {
     const dismissed = new Set<string>([...locallyDismissed])
@@ -156,7 +193,7 @@ function App() {
     const filename = `meetinggenius-board-${nowIsoForFilename()}.json`
     downloadJsonFile(lastBoardExport, filename)
     recordBoardExportDownloaded(filename)
-    showClientStatus(`Board exported: ${filename}`)
+    window.setTimeout(() => showClientStatus(`Board exported: ${filename}`), 0)
   }, [lastBoardExport, showClientStatus])
 
   useEffect(() => {
@@ -170,13 +207,13 @@ function App() {
   const applyLocation = () => {
     const nextLocation = locationDraft.trim()
     if (!nextLocation) return
-    const sent = sendSessionContext({ defaultLocation: nextLocation, noBrowse, years })
+    const sent = sendSessionContext({ defaultLocation: nextLocation, noBrowse, years, mindmapAi })
     if (!sent) return
 
     if (nextLocation !== location) {
       recordAssumptionsChanged({
         changes: { location: { prev: location, next: nextLocation } },
-        current: { location: nextLocation, years, no_browse: noBrowse },
+        current: { location: nextLocation, years, no_browse: noBrowse, mindmap_ai: mindmapAi },
       })
     }
 
@@ -290,8 +327,15 @@ function App() {
         <div className="mgHeaderMeta">
           <div className="mgHeaderTopRow">
             <div className={`mgPill mgPill--${connectionState}`}>WS: {connectionState}</div>
+            {mindmapStatus === 'running' ? <div className="mgPill mgPill--running">Mindmap: updating…</div> : null}
             {statusMessage ? <div className="mgStatus">{statusMessage}</div> : null}
             <div className="mgHeaderActions">
+              <button
+                className="mgButton mgButton--small"
+                onClick={() => setViewMode((prev) => (prev === 'whiteboard' ? 'mindmap' : 'whiteboard'))}
+              >
+                View: {viewMode === 'whiteboard' ? 'Whiteboard' : 'Mindmap'}
+              </button>
               <button className="mgButton mgButton--small" disabled={connectionState !== 'open'} onClick={runAiNow}>
                 Run AI now
               </button>
@@ -332,6 +376,7 @@ function App() {
               <div className="mgPill mgPill--idle">Location: {location}</div>
               <div className="mgPill mgPill--idle">Years: {years}</div>
               <div className="mgPill mgPill--idle">External research: {noBrowse ? 'Off' : 'On'}</div>
+              <div className="mgPill mgPill--idle">Mindmap AI: {mindmapAi ? 'On' : 'Off'}</div>
             </div>
             <div className="mgHeaderAssumptionsControls">
               <div className="mgHeaderLocation">
@@ -369,7 +414,7 @@ function App() {
                     if (Number.isNaN(nextYears) || nextYears === years) return
                     recordAssumptionsChanged({
                       changes: { years: { prev: years, next: nextYears } },
-                      current: { location, years: nextYears, no_browse: noBrowse },
+                      current: { location, years: nextYears, no_browse: noBrowse, mindmap_ai: mindmapAi },
                     })
                     setYears(nextYears)
                     showClientStatus(`Years set: ${nextYears}`)
@@ -396,11 +441,46 @@ function App() {
                     if (nextNoBrowse === noBrowse) return
                     recordAssumptionsChanged({
                       changes: { no_browse: { prev: noBrowse, next: nextNoBrowse } },
-                      current: { location, years, no_browse: nextNoBrowse },
+                      current: { location, years, no_browse: nextNoBrowse, mindmap_ai: mindmapAi },
                     })
                     setNoBrowse(nextNoBrowse)
-                    const sent = sendSessionContext({ defaultLocation: location, noBrowse: nextNoBrowse, years })
+                    const sent = sendSessionContext({
+                      defaultLocation: location,
+                      noBrowse: nextNoBrowse,
+                      years,
+                      mindmapAi,
+                    })
                     if (sent) showClientStatus(`External research ${nextNoBrowse ? 'Off' : 'On'}`)
+                  }}
+                >
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+
+              <div className="mgHeaderMindmapAi">
+                <label className="mgHeaderLabel" htmlFor="mgMindmapAiSelect">
+                  Mindmap AI
+                </label>
+                <select
+                  id="mgMindmapAiSelect"
+                  className="mgInput mgInput--small mgSelect--medium"
+                  value={mindmapAi ? 'on' : 'off'}
+                  onChange={(e) => {
+                    const nextMindmapAi = e.target.value === 'on'
+                    if (nextMindmapAi === mindmapAi) return
+                    recordAssumptionsChanged({
+                      changes: { mindmap_ai: { prev: mindmapAi, next: nextMindmapAi } },
+                      current: { location, years, no_browse: noBrowse, mindmap_ai: nextMindmapAi },
+                    })
+                    setMindmapAi(nextMindmapAi)
+                    const sent = sendSessionContext({
+                      defaultLocation: location,
+                      noBrowse,
+                      years,
+                      mindmapAi: nextMindmapAi,
+                    })
+                    if (sent) showClientStatus(`Mindmap AI ${nextMindmapAi ? 'On' : 'Off'}`)
                   }}
                 >
                   <option value="on">On</option>
@@ -440,15 +520,19 @@ function App() {
           />
         </aside>
 
-        <section className="mgPanel mgPanel--whiteboard">
-          <Whiteboard
-            boardState={boardState}
-            dismissed={effectiveDismissed}
-            sendClientBoardAction={sendClientBoardAction}
-            onDismiss={(cardId) => {
-              setLocallyDismissed((prev) => new Set(prev).add(cardId))
-            }}
-          />
+        <section className={`mgPanel ${viewMode === 'whiteboard' ? 'mgPanel--whiteboard' : 'mgPanel--mindmap'}`}>
+          {viewMode === 'whiteboard' ? (
+            <Whiteboard
+              boardState={boardState}
+              dismissed={effectiveDismissed}
+              sendClientBoardAction={sendClientBoardAction}
+              onDismiss={(cardId) => {
+                setLocallyDismissed((prev) => new Set(prev).add(cardId))
+              }}
+            />
+          ) : (
+            <Mindmap mindmapState={mindmapState} sendClientMindmapAction={sendClientMindmapAction} />
+          )}
         </section>
       </main>
     </div>

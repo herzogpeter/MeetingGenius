@@ -69,3 +69,27 @@ Notes:
 ```bash
 npm run build
 ```
+
+## E2E (Playwright)
+
+An optional E2E test drives the UI “Replay transcript (simulation)” and checks that the Mindmap view updates.
+
+One-time setup:
+
+```bash
+cd apps/web
+npm ci
+npm run playwright:install
+```
+
+Run:
+
+```bash
+cd apps/web
+npm run test:e2e -- e2e/mindmap-replay.spec.ts
+```
+
+Notes:
+
+- The Playwright config starts backend+frontend via `scripts/e2e-serve.sh` (defaults: backend `8010`, frontend `5174`).
+- Set `E2E_STRICT=1` to enable simple thresholds (override with `E2E_MIN_NODES` / `E2E_MIN_UNIQUE_RATIO`).

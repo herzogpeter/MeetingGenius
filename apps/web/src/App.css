@@ -78,6 +78,12 @@
   gap: 6px;
 }
 
+.mgHeaderMindmapAi {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .mgHeaderLabel {
   font-size: 12px;
   color: rgba(15, 23, 42, 0.7);
@@ -127,6 +133,11 @@
   background: linear-gradient(180deg, rgba(246, 247, 251, 1), rgba(240, 243, 250, 1));
 }
 
+.mgPanel--mindmap {
+  flex: 1;
+  background: linear-gradient(180deg, rgba(246, 247, 251, 1), rgba(240, 243, 250, 1));
+}
+
 .mgPanelTitle {
   padding: 12px 14px 8px;
   font-weight: 700;
@@ -146,6 +157,10 @@
   background: rgba(34, 197, 94, 0.08);
 }
 .mgPill--connecting {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.08);
+}
+.mgPill--running {
   border-color: rgba(59, 130, 246, 0.35);
   background: rgba(59, 130, 246, 0.08);
 }
@@ -284,6 +299,72 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+}
+
+.mgMindmap {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.mgMindmapCanvas {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.mgMindmapInner {
+  position: relative;
+  width: 2000px;
+  height: 1400px;
+}
+
+.mgMindmapEdges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mgMindmapNode {
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 10px 8px;
+  gap: 8px;
+  cursor: grab;
+}
+
+.mgMindmapNode--collapsed {
+  border-color: rgba(59, 130, 246, 0.25);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.mgMindmapNodeText {
+  font-weight: 600;
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mgMindmapNodeActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.mgMindmapNodeActions .mgIconButton {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
 }
 
 .mgCanvas {

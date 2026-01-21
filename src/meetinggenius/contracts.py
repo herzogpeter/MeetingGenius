@@ -270,6 +270,94 @@ class BoardState(BaseModel):
     return cls()
 
 
+class MindmapPoint(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  x: float
+  y: float
+
+
+class MindmapNode(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  node_id: str
+  parent_id: str | None = None
+  text: str
+  collapsed: bool = False
+  sources: list[Citation] = Field(default_factory=list)
+
+
+class MindmapState(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  root_id: str = "mm:root"
+  nodes: dict[str, MindmapNode] = Field(default_factory=dict)
+  layout: dict[str, MindmapPoint] = Field(default_factory=dict)
+
+  @classmethod
+  def empty(cls) -> "MindmapState":
+    return cls()
+
+
+class UpsertMindmapNodeAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["upsert_node"] = "upsert_node"
+  node: MindmapNode
+
+
+class SetMindmapNodePosAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["set_node_pos"] = "set_node_pos"
+  node_id: str
+  pos: MindmapPoint
+
+
+class SetMindmapNodeCollapsedAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["set_collapsed"] = "set_collapsed"
+  node_id: str
+  collapsed: bool
+
+
+class RenameMindmapNodeAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["rename_node"] = "rename_node"
+  node_id: str
+  text: str
+
+
+class ReparentMindmapNodeAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["reparent_node"] = "reparent_node"
+  node_id: str
+  new_parent_id: str | None
+
+
+class DeleteMindmapSubtreeAction(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  type: Literal["delete_subtree"] = "delete_subtree"
+  node_id: str
+
+
+MindmapAction = Annotated[
+  Union[
+    UpsertMindmapNodeAction,
+    SetMindmapNodePosAction,
+    SetMindmapNodeCollapsedAction,
+    RenameMindmapNodeAction,
+    ReparentMindmapNodeAction,
+    DeleteMindmapSubtreeAction,
+  ],
+  Field(discriminator="type"),
+]
+
+
 @dataclass(frozen=True)
 class ToolingPolicy:
   no_browse: bool = False

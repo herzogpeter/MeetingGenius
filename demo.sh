@@ -5,9 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
-
-VITE_WS_URL_DEFAULT="ws://localhost:${BACKEND_PORT}/ws"
-VITE_WS_URL="${VITE_WS_URL:-$VITE_WS_URL_DEFAULT}"
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
 
 cd "$ROOT_DIR"
 
@@ -24,6 +22,41 @@ if [[ -f ".env" ]]; then
   if [[ "$xtrace_was_on" == "1" ]]; then
     set -x
   fi
+fi
+
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
+
+detect_public_host() {
+  local ip=""
+  if command -v ipconfig >/dev/null 2>&1; then
+    ip="$(ipconfig getifaddr en0 2>/dev/null || true)"
+    if [[ -z "$ip" ]]; then
+      ip="$(ipconfig getifaddr en1 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "$ip" ]] && command -v ifconfig >/dev/null 2>&1; then
+    ip="$(ifconfig | awk '/inet / && $2 != \"127.0.0.1\" {print $2; exit}' || true)"
+  fi
+  printf "%s" "$ip"
+}
+
+PUBLIC_HOST="${PUBLIC_HOST:-}"
+if [[ -z "$PUBLIC_HOST" ]]; then
+  if [[ "$BIND_HOST" == "0.0.0.0" ]]; then
+    PUBLIC_HOST="$(detect_public_host)"
+  else
+    PUBLIC_HOST="$BIND_HOST"
+  fi
+fi
+if [[ -z "$PUBLIC_HOST" && "$BIND_HOST" == "0.0.0.0" ]]; then
+  echo "WARN: could not auto-detect your LAN IP; set PUBLIC_HOST (e.g. PUBLIC_HOST=192.168.1.50)." >&2
+fi
+
+# Only force VITE_WS_URL when needed; otherwise let the UI infer it from window.location.
+if [[ -z "${VITE_WS_URL:-}" && "${BACKEND_PORT}" != "8000" ]]; then
+  VITE_WS_URL="ws://${PUBLIC_HOST:-localhost}:${BACKEND_PORT}/ws"
 fi
 
 have_cmd() {
@@ -107,8 +140,10 @@ python -m pip install -e . >/dev/null
 (cd apps/web && npm install)
 
 cat <<EOF
-Backend:  http://localhost:${BACKEND_PORT}  (WS: ws://localhost:${BACKEND_PORT}/ws)
-Frontend: http://localhost:${FRONTEND_PORT}  (VITE_WS_URL=${VITE_WS_URL})
+Backend:  http://${PUBLIC_HOST:-localhost}:${BACKEND_PORT}  (bind: ${BIND_HOST})
+Frontend: http://${PUBLIC_HOST:-localhost}:${FRONTEND_PORT}  (bind: ${BIND_HOST})
+WS:       ws://${PUBLIC_HOST:-localhost}:${BACKEND_PORT}/ws
+${VITE_WS_URL:+VITE_WS_URL=${VITE_WS_URL}}
 
 Demo steps:
   1) Open the frontend URL.
@@ -125,8 +160,12 @@ Try these prompts:
 Starting backend + frontend (Ctrl+C to stop)…
 EOF
 
-start_process BACKEND_PID "exec uvicorn meetinggenius.server:app --reload --port \"${BACKEND_PORT}\""
-start_process FRONTEND_PID "cd apps/web && VITE_WS_URL=\"${VITE_WS_URL}\" exec npm run dev -- --port \"${FRONTEND_PORT}\""
+start_process BACKEND_PID "exec uvicorn meetinggenius.server:app --reload --host \"${BIND_HOST}\" --port \"${BACKEND_PORT}\""
+if [[ -n "${VITE_WS_URL:-}" ]]; then
+  start_process FRONTEND_PID "cd apps/web && VITE_WS_URL=\"${VITE_WS_URL}\" exec npm run dev -- --host \"${BIND_HOST}\" --port \"${FRONTEND_PORT}\""
+else
+  start_process FRONTEND_PID "cd apps/web && exec npm run dev -- --host \"${BIND_HOST}\" --port \"${FRONTEND_PORT}\""
+fi
 
 while true; do
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then

@@ -64,6 +64,33 @@ export type BoardState = {
   dismissed: Record<string, string>
 }
 
+export type MindmapPoint = {
+  x: number
+  y: number
+}
+
+export type MindmapNode = {
+  node_id: string
+  parent_id: string | null
+  text: string
+  collapsed: boolean
+  sources: Citation[]
+}
+
+export type MindmapState = {
+  root_id: string
+  nodes: Record<string, MindmapNode>
+  layout: Record<string, MindmapPoint>
+}
+
+export type MindmapAction =
+  | { type: 'upsert_node'; node: MindmapNode }
+  | { type: 'set_node_pos'; node_id: string; pos: MindmapPoint }
+  | { type: 'set_collapsed'; node_id: string; collapsed: boolean }
+  | { type: 'rename_node'; node_id: string; text: string }
+  | { type: 'reparent_node'; node_id: string; new_parent_id: string | null }
+  | { type: 'delete_subtree'; node_id: string }
+
 export type OutgoingMessage =
   | { type: 'transcript_event'; event: TranscriptEvent }
   | {
@@ -72,6 +99,7 @@ export type OutgoingMessage =
       no_browse?: boolean
       years?: number
       month?: number
+      mindmap_ai?: boolean
     }
   | { type: 'export_board' }
   | {
@@ -81,6 +109,7 @@ export type OutgoingMessage =
       no_browse?: boolean | null
     }
   | { type: 'client_board_action'; action: unknown }
+  | { type: 'client_mindmap_action'; action: MindmapAction }
   | { type: 'run_ai' }
   | { type: 'reset' }
 
@@ -97,6 +126,19 @@ export type IncomingBoardExportMessage = {
   no_browse?: boolean
 }
 
+export type IncomingMindmapActionsMessage = {
+  type: 'mindmap_actions'
+  actions: MindmapAction[]
+  state: MindmapState
+}
+
+export type MindmapStatus = 'idle' | 'running'
+
+export type IncomingMindmapStatusMessage = {
+  type: 'mindmap_status'
+  status: MindmapStatus
+}
+
 export type IncomingStatusMessage = { type: 'status'; message: string }
 
 export type IncomingErrorMessage = { type: 'error'; message: string; details?: unknown }
@@ -104,6 +146,8 @@ export type IncomingErrorMessage = { type: 'error'; message: string; details?: u
 export type IncomingMessage =
   | IncomingBoardActionsMessage
   | IncomingBoardExportMessage
+  | IncomingMindmapActionsMessage
+  | IncomingMindmapStatusMessage
   | IncomingStatusMessage
   | IncomingErrorMessage
 
@@ -111,4 +155,10 @@ export const emptyBoardState = (): BoardState => ({
   cards: {},
   layout: {},
   dismissed: {},
+})
+
+export const emptyMindmapState = (): MindmapState => ({
+  root_id: 'mm:root',
+  nodes: {},
+  layout: {},
 })

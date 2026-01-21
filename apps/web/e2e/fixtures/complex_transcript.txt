@@ -1,0 +1,68 @@
+[00:00] Alex: Alright, quick agenda — what we learned from last week’s pilot, what we’re shipping in the next two sprints, and the “live meeting map” view that people keep asking about.
+
+[00:15] Jamie: Before we jump in, support has a theme: when customers paste a big blob of notes, the UI feels “stuttery.” It doesn’t crash, but it looks like it’s thinking and then everything snaps into place.
+
+[00:28] Priya: That’s consistent with repainting too often. If the visualization is reacting to every partial phrase, we might need smarter batching or a small debounce on the rendering side.
+
+[00:42] Alex: Yep. But product-wise, the whole point is that it draws while you’re talking. People want to see what’s been covered as the meeting is happening, not after.
+
+[00:55] Morgan: The pilot feedback was interesting. They didn’t say “decisions” or “risks” out loud. They said stuff like “we probably shouldn’t do that” or “that makes me nervous” and later someone would go “okay so we’re doing the other option then?”
+
+[01:12] Jamie: Exactly. It’s messy. It’s not a neat checklist.
+
+[01:18] Alex: So, for the live map view: the simplest version is just a mindmap that branches as topics emerge. We can start with “Project launch” and then it breaks into “timeline,” “dependencies,” “open questions,” and then deeper.
+
+[01:34] Priya: If we do a mindmap, we need stable node IDs, or the nodes will re-create and jump around every time the model updates. That was the root cause of the jitter in my prototype.
+
+[01:48] Alex: Right, and eventually I want drag-and-drop. Users should be able to pull “timeline” under “launch plan,” rename it, merge duplicates. But we can’t block on perfect UX.
+
+[02:04] Morgan: On the launch itself, I’m worried about the Zoom integration. Their OAuth review keeps bouncing us for minor copy changes. We could be fine, or we could lose a week.
+
+[02:17] Jamie: And legal still hasn’t signed off on the updated data retention language. I asked twice. They keep saying “end of week,” but that’s been true for three weeks.
+
+[02:30] Alex: If we’re honest, the launch date is a range, not a day. Marketing wants a webinar slot, but I don’t want to promise February 10th and then miss it.
+
+[02:43] Priya: On the engineering side, the streaming pipeline is okay, but we’re currently treating every transcript chunk like a whole new request. That’s expensive and it can “echo” concepts.
+
+[02:58] Morgan: When you say echo, do you mean it repeats the same nodes?
+
+[03:02] Priya: Yeah. The model hears “pricing” three times and it creates three “pricing” nodes because the phrasing varies: “pricing model,” “pricing,” “costs.” Humans know those are the same cluster.
+
+[03:18] Alex: That’s a good example of why editing matters. Users need to be able to merge or drag one under the other.
+
+[03:27] Jamie: Also the meeting naturally loops. People circle back. A mindmap has to handle that without exploding.
+
+[03:36] Alex: Let’s park “perfect clustering” for a second. For the next sprint, I want: real-time drawing, readable layout, and a way to replay a transcript so we can test without sitting in meetings all day.
+
+[03:52] Morgan: Speaking of replay, can we simulate the pace of a real meeting? Like not just paste everything at once, but feed it in chunks?
+
+[04:01] Priya: Yes, we can. If we control words-per-minute and chunk size, we can approximate the cadence. We should also test interruptions and half-finished sentences.
+
+[04:14] Jamie: And accents, but one thing at a time.
+
+[04:19] Alex: On pilot feedback: they liked that “who owns what” surfaced even when it wasn’t explicit. Someone says “I’ll take a first pass” and it becomes an action item.
+
+[04:34] Morgan: But sometimes that’s wrong. “I’ll take a look” isn’t always an action item; sometimes it’s polite noise.
+
+[04:41] Priya: So we need confidence or we need a way to mark something as tentative.
+
+[04:47] Alex: A “maybe” state could be phase two. For now, at least keep it editable.
+
+[04:55] Jamie: Here’s a messy excerpt from the pilot: “If we can’t get procurement done, we should just start with the team plan and upgrade later.” That’s a decision, but no one said “decision.”
+
+[05:10] Morgan: That also implies a risk and a contingency plan. The mindmap might need multi-parent relationships, but we can represent it as a single place and cross-link later.
+
+[05:24] Alex: We’ll keep it tree-shaped for now. No graphs yet.
+
+[05:29] Priya: Okay. Technical path: mindmap state stored as JSON, UI renders from that state, and updates stream in via WebSocket. The extractor proposes paths like “Launch > Zoom integration > OAuth review delays.”
+
+[05:47] Jamie: And we seed basic buckets like “Decisions” and “Risks / Blockers” so the map is never empty and people have anchors.
+
+[05:56] Morgan: One more thing: the sales team wants “customer quotes” captured. Like “they literally said ‘this is too complex’.” That might be a separate branch.
+
+[06:08] Alex: Good. Let’s not overfit to our categories. If a branch emerges like “pricing confusion” we capture it.
+
+[06:16] Priya: So what’s the next concrete step?
+
+[06:19] Alex: This week: implement the mindmap view, keep it real-time, add replay, and then we’ll watch a couple internal meetings to see what breaks.
+

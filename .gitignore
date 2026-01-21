@@ -29,6 +29,10 @@ htmlcov/
 .idea/
 .vscode/
 
+# Codex / orchestration
+.orch/
+.codex-orch.yaml
+
 # Local secrets
 .env
 
@@ -36,9 +40,15 @@ htmlcov/
 **/node_modules/
 **/dist/
 **/dist-ssr/
+**/playwright-report/
+**/test-results/
 
 # Local persistence DBs
 meetinggenius.sqlite3
 meetinggenius.sqlite3-*
 *.sqlite3
 *.sqlite3-*
+
+# Local session artifacts
+docs/meetinggenius-board-*.json
+docs/meetinggenius-session-*.json

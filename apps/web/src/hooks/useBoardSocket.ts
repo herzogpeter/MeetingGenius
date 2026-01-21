@@ -4,10 +4,13 @@ import type {
   IncomingBoardExportMessage,
   IncomingErrorMessage,
   IncomingMessage,
+  MindmapAction,
+  MindmapStatus,
+  MindmapState,
   OutgoingMessage,
   TranscriptEvent,
 } from '../contracts'
-import { emptyBoardState } from '../contracts'
+import { emptyBoardState, emptyMindmapState } from '../contracts'
 import {
   recordBoardActionsReceived,
   recordConnectionStateChanged,
@@ -28,8 +31,16 @@ export function useBoardSocket(): {
   lastError: IncomingErrorMessage | null
   lastBoardExport: IncomingBoardExportMessage | null
   boardState: BoardState
+  mindmapState: MindmapState
+  mindmapStatus: MindmapStatus
   sendTranscriptEvent: (event: TranscriptEvent) => void
-  sendSessionContext: (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) => boolean
+  sendSessionContext: (args: {
+    defaultLocation: string
+    noBrowse: boolean
+    years?: number
+    month?: number
+    mindmapAi?: boolean
+  }) => boolean
   sendExportBoard: () => boolean
   sendImportBoard: (args: {
     state: BoardState
@@ -38,6 +49,7 @@ export function useBoardSocket(): {
   }) => boolean
   sendRunAi: () => boolean
   sendClientBoardAction: (action: unknown) => void
+  sendClientMindmapAction: (action: MindmapAction) => void
   sendReset: () => void
 } {
   const socketRef = useRef<WebSocket | null>(null)
@@ -49,6 +61,8 @@ export function useBoardSocket(): {
   const [lastError, setLastError] = useState<IncomingErrorMessage | null>(null)
   const [lastBoardExport, setLastBoardExport] = useState<IncomingBoardExportMessage | null>(null)
   const [boardState, setBoardState] = useState<BoardState>(() => emptyBoardState())
+  const [mindmapState, setMindmapState] = useState<MindmapState>(() => emptyMindmapState())
+  const [mindmapStatus, setMindmapStatus] = useState<MindmapStatus>('idle')
 
   const sendMessage = useCallback((message: OutgoingMessage) => {
     const socket = socketRef.current
@@ -67,13 +81,14 @@ export function useBoardSocket(): {
   )
 
   const sendSessionContext = useCallback(
-    (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number }) =>
+    (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number; mindmapAi?: boolean }) =>
       sendMessage({
         type: 'set_session_context',
         default_location: args.defaultLocation,
         no_browse: args.noBrowse,
         years: args.years,
         month: args.month,
+        mindmap_ai: args.mindmapAi,
       }),
     [sendMessage],
   )
@@ -99,10 +114,16 @@ export function useBoardSocket(): {
     sendMessage({ type: 'client_board_action', action })
   }, [sendMessage])
 
+  const sendClientMindmapAction = useCallback((action: MindmapAction) => {
+    sendMessage({ type: 'client_mindmap_action', action })
+  }, [sendMessage])
+
   const sendReset = useCallback(() => {
     sendMessage({ type: 'reset' })
     setLastStatusMessage(null)
     setBoardState(emptyBoardState())
+    setMindmapState(emptyMindmapState())
+    setMindmapStatus('idle')
   }, [sendMessage])
 
   const connect = useCallback(function connectSocket() {
@@ -120,6 +141,7 @@ export function useBoardSocket(): {
       setConnectionState('open')
       setLastStatusMessage(null)
       setLastError(null)
+      setMindmapStatus('idle')
       recordConnectionStateChanged('open')
     })
 
@@ -147,6 +169,16 @@ export function useBoardSocket(): {
           return
         }
 
+        if (message.type === 'mindmap_actions') {
+          setMindmapState(message.state ?? emptyMindmapState())
+          return
+        }
+
+        if (message.type === 'mindmap_status') {
+          setMindmapStatus(message.status ?? 'idle')
+          return
+        }
+
         if (message.type === 'board_export') {
           setLastBoardExport(message)
           return
@@ -159,6 +191,7 @@ export function useBoardSocket(): {
     socket.addEventListener('close', () => {
       setConnectionState('closed')
       recordConnectionStateChanged('closed')
+      setMindmapStatus('idle')
       if (shouldReconnectRef.current) {
         reconnectTimerRef.current = window.setTimeout(() => connectSocket(), 1000)
       }
@@ -167,6 +200,7 @@ export function useBoardSocket(): {
     socket.addEventListener('error', () => {
       setConnectionState('error')
       recordConnectionStateChanged('error')
+      setMindmapStatus('idle')
     })
   }, [])
 
@@ -187,12 +221,15 @@ export function useBoardSocket(): {
       lastError,
       lastBoardExport,
       boardState,
+      mindmapState,
+      mindmapStatus,
       sendTranscriptEvent,
       sendSessionContext,
       sendExportBoard,
       sendImportBoard,
       sendRunAi,
       sendClientBoardAction,
+      sendClientMindmapAction,
       sendReset,
     }),
     [
@@ -201,7 +238,10 @@ export function useBoardSocket(): {
       lastBoardExport,
       lastError,
       lastStatusMessage,
+      mindmapState,
+      mindmapStatus,
       sendClientBoardAction,
+      sendClientMindmapAction,
       sendExportBoard,
       sendImportBoard,
       sendReset,

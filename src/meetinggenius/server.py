@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -13,6 +14,15 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import TypeAdapter, ValidationError
 
+try:
+  from dotenv import load_dotenv
+
+  load_dotenv()
+except Exception:
+  # Optional convenience: load `.env` if present (e.g., when running `uvicorn` directly).
+  # Ignore failures so production/container env behaves normally.
+  pass
+
 from meetinggenius.board.reducer import apply_action
 from meetinggenius.agents.orchestrator import MEETING_NATIVE_LIST_CARD_IDS
 from meetinggenius.contracts import (
@@ -23,6 +33,14 @@ from meetinggenius.contracts import (
   ListItem,
   ListCard,
   ListCardProps,
+  MindmapAction,
+  MindmapNode,
+  MindmapPoint,
+  MindmapState,
+  RenameMindmapNodeAction,
+  SetMindmapNodeCollapsedAction,
+  SetMindmapNodePosAction,
+  UpsertMindmapNodeAction,
   Rect,
   ToolingPolicy,
   TranscriptEvent,
@@ -31,11 +49,15 @@ from meetinggenius.contracts import (
 from meetinggenius.sqlite_store import (
   BOARD_STATE_KEY,
   DEFAULT_LOCATION_KEY,
+  MINDMAP_STATE_KEY,
+  MINDMAP_AI_KEY,
   NO_BROWSE_KEY,
   DebouncedStatePersister,
   SQLiteKVStore,
   load_board_state,
   load_default_location,
+  load_mindmap_state,
+  load_mindmap_ai,
   load_no_browse,
   resolve_db_path,
 )
@@ -55,6 +77,15 @@ MEETING_NATIVE_BASE_LIST_CARDS: tuple[tuple[str, str], ...] = (
   ("list-next-steps", "Next Steps"),
 )
 MEETING_NATIVE_BASE_LIST_CARD_IDS = MEETING_NATIVE_LIST_CARD_IDS
+
+MINDMAP_ROOT_ID = "mm:root"
+MEETING_NATIVE_MINDMAP_CATEGORIES: tuple[tuple[str, str, str], ...] = (
+  ("mm:decisions", "Decisions", "list-decisions"),
+  ("mm:actions", "Action Items", "list-actions"),
+  ("mm:questions", "Open Questions", "list-questions"),
+  ("mm:risks", "Risks / Blockers", "list-risks"),
+  ("mm:next-steps", "Next Steps", "list-next-steps"),
+)
 
 
 def _meeting_native_seed_rect(index: int) -> Rect:
@@ -247,6 +278,403 @@ def _meeting_native_create_or_update_actions(
   return actions, next_state
 
 
+def _mindmap_normalize_text(value: str) -> str:
+  cleaned = value.strip().lower()
+  cleaned = re.sub(r"\s+", " ", cleaned).strip()
+  cleaned = cleaned.strip(" \t\r\n.;")
+  return cleaned
+
+
+_MINDMAP_RESERVED_SEGMENTS: dict[str, str] = {
+  "mindmap": MINDMAP_ROOT_ID,
+  "decisions": "mm:decisions",
+  "decision": "mm:decisions",
+  "action items": "mm:actions",
+  "action item": "mm:actions",
+  "open questions": "mm:questions",
+  "open question": "mm:questions",
+  "questions": "mm:questions",
+  "question": "mm:questions",
+  "risks blockers": "mm:risks",
+  "risks and blockers": "mm:risks",
+  "risk": "mm:risks",
+  "risks": "mm:risks",
+  "blocker": "mm:risks",
+  "blockers": "mm:risks",
+  "next steps": "mm:next-steps",
+  "next step": "mm:next-steps",
+  "follow ups": "mm:next-steps",
+  "follow up": "mm:next-steps",
+}
+
+
+def _mindmap_route_reserved_segment(text: str) -> str | None:
+  key = _normalize_title(text)
+  if not key:
+    return None
+  return _MINDMAP_RESERVED_SEGMENTS.get(key)
+
+
+def _mindmap_leaf_id(parent_id: str, text: str) -> str:
+  normalized = _mindmap_normalize_text(text)
+  digest = hashlib.sha1(f"{parent_id}\n{normalized}".encode("utf-8")).hexdigest()[:12]
+  return f"mm:item:{digest}"
+
+
+def _mindmap_path_id(parent_id: str, text: str) -> str:
+  normalized = _mindmap_normalize_text(text)
+  digest = hashlib.sha1(f"{parent_id}\n{normalized}".encode("utf-8")).hexdigest()[:12]
+  return f"mm:path:{digest}"
+
+
+def _mindmap_find_child_by_text(state: MindmapState, *, parent_id: str, text: str) -> str | None:
+  wanted = _mindmap_normalize_text(text)
+  if not wanted:
+    return None
+  best_id: str | None = None
+  best_score = 0.0
+  for node_id, node in state.nodes.items():
+    if node.parent_id != parent_id:
+      continue
+    if _mindmap_normalize_text(node.text) == wanted:
+      return node_id
+    if _very_similar_title(node.text, text):
+      score = _title_similarity(node.text, text)
+      if score > best_score:
+        best_id = node_id
+        best_score = score
+  return best_id
+
+
+def _mindmap_should_global_dedupe(text: str) -> bool:
+  # Avoid globally deduping short/generic segments like "Timeline" or "Shipping".
+  normalized = _normalize_title(text)
+  if len(normalized) < 14:
+    return False
+  tokens = normalized.split()
+  return len(tokens) >= 3
+
+
+def _mindmap_find_any_node_by_exact_text(state: MindmapState, text: str) -> str | None:
+  wanted = _mindmap_normalize_text(text)
+  if not wanted:
+    return None
+  for node_id, node in state.nodes.items():
+    if _mindmap_normalize_text(node.text) == wanted:
+      return node_id
+  return None
+
+
+def _mindmap_auto_pos_for_child(state: MindmapState, *, parent_id: str, sibling_index: int) -> MindmapPoint:
+  if parent_id == MINDMAP_ROOT_ID:
+    base_y = 60.0 + len(MEETING_NATIVE_MINDMAP_CATEGORIES) * 150.0
+    return MindmapPoint(x=300.0, y=base_y + sibling_index * 110.0)
+
+  parent_pos = state.layout.get(parent_id)
+  if parent_pos is None:
+    parent_pos = MindmapPoint(x=40.0, y=40.0)
+  return MindmapPoint(x=parent_pos.x + 360.0, y=parent_pos.y + sibling_index * 90.0)
+
+
+def _format_transcript_window_for_mindmap_ai(events: list[TranscriptEvent]) -> str:
+  lines: list[str] = []
+  for e in events:
+    status = "final" if e.is_final else "interim"
+    who = f"{e.speaker}: " if e.speaker else ""
+    lines.append(f"- [{e.timestamp.isoformat()}] ({status}) {who}{e.text}")
+  return "\n".join(lines)
+
+
+def _format_mindmap_state_summary(state: MindmapState, *, max_nodes: int = 60, max_children: int = 12) -> str:
+  if not state.nodes:
+    return "(empty mindmap)"
+
+  nodes = state.nodes
+  root = nodes.get(state.root_id)
+  if root is None:
+    return f"(mindmap has {len(nodes)} nodes; missing root_id={state.root_id!r})"
+
+  children_by_parent: dict[str, list[MindmapNode]] = {}
+  for node in nodes.values():
+    if not node.parent_id:
+      continue
+    children_by_parent.setdefault(node.parent_id, []).append(node)
+  for parent_id in list(children_by_parent.keys()):
+    children_by_parent[parent_id].sort(key=lambda n: _mindmap_normalize_text(n.text))
+
+  lines: list[str] = []
+  count = 0
+
+  def visit(node_id: str, depth: int) -> None:
+    nonlocal count
+    if count >= max_nodes:
+      return
+    node = nodes.get(node_id)
+    if node is None:
+      return
+    prefix = "  " * depth
+    lines.append(f"{prefix}- {node.text}")
+    count += 1
+    if node.collapsed:
+      return
+    for child in children_by_parent.get(node_id, [])[:max_children]:
+      visit(child.node_id, depth + 1)
+
+  visit(state.root_id, 0)
+  remaining = len(nodes) - count
+  if remaining > 0:
+    lines.append(f"- …and {remaining} more node(s)")
+  return "\n".join(lines).strip()
+
+
+def _mindmap_category_pos(category_index: int) -> MindmapPoint:
+  return MindmapPoint(x=300.0, y=60.0 + category_index * 150.0)
+
+
+def _mindmap_leaf_pos(category_index: int, item_index: int) -> MindmapPoint:
+  return MindmapPoint(x=660.0, y=120.0 + category_index * 150.0 + item_index * 70.0)
+
+
+def _mindmap_root_pos() -> MindmapPoint:
+  return MindmapPoint(x=40.0, y=40.0)
+
+
+def _apply_mindmap_action(state: MindmapState, action: MindmapAction) -> MindmapState:
+  if isinstance(action, UpsertMindmapNodeAction):
+    nodes = dict(state.nodes)
+    nodes[action.node.node_id] = action.node
+    return state.model_copy(update={"nodes": nodes})
+
+  if isinstance(action, SetMindmapNodePosAction):
+    layout = dict(state.layout)
+    layout[action.node_id] = action.pos
+    return state.model_copy(update={"layout": layout})
+
+  if isinstance(action, SetMindmapNodeCollapsedAction):
+    node = state.nodes.get(action.node_id)
+    if node is None:
+      return state
+    nodes = dict(state.nodes)
+    nodes[action.node_id] = node.model_copy(update={"collapsed": action.collapsed})
+    return state.model_copy(update={"nodes": nodes})
+
+  if isinstance(action, RenameMindmapNodeAction):
+    node = state.nodes.get(action.node_id)
+    if node is None:
+      return state
+    nodes = dict(state.nodes)
+    nodes[action.node_id] = node.model_copy(update={"text": action.text})
+    return state.model_copy(update={"nodes": nodes})
+
+  if isinstance(action, DeleteMindmapSubtreeAction):
+    if action.node_id == state.root_id:
+      return MindmapState.empty()
+
+    nodes = dict(state.nodes)
+    layout = dict(state.layout)
+    to_delete: list[str] = [action.node_id]
+
+    idx = 0
+    while idx < len(to_delete):
+      current = to_delete[idx]
+      idx += 1
+      for node_id, node in list(nodes.items()):
+        if node.parent_id == current:
+          to_delete.append(node_id)
+
+    for node_id in to_delete:
+      nodes.pop(node_id, None)
+      layout.pop(node_id, None)
+
+    return state.model_copy(update={"nodes": nodes, "layout": layout})
+
+  if isinstance(action, ReparentMindmapNodeAction):
+    if action.node_id == state.root_id:
+      return state
+    node = state.nodes.get(action.node_id)
+    if node is None:
+      return state
+    if action.new_parent_id is not None and action.new_parent_id not in state.nodes:
+      return state
+
+    # Prevent cycles by disallowing reparenting under a descendant.
+    descendant_ids: set[str] = set()
+    queue = [action.node_id]
+    while queue:
+      cur = queue.pop()
+      for nid, n in state.nodes.items():
+        if n.parent_id == cur and nid not in descendant_ids:
+          descendant_ids.add(nid)
+          queue.append(nid)
+    if action.new_parent_id in descendant_ids:
+      return state
+
+    nodes = dict(state.nodes)
+    nodes[action.node_id] = node.model_copy(update={"parent_id": action.new_parent_id})
+    return state.model_copy(update={"nodes": nodes})
+
+  return state
+
+
+def _ensure_meeting_native_mindmap(state: MindmapState, items_by_card_id: dict[str, list[str]]) -> tuple[list[MindmapAction], MindmapState]:
+  actions: list[MindmapAction] = []
+  next_state = state
+
+  if next_state.root_id != MINDMAP_ROOT_ID:
+    next_state = next_state.model_copy(update={"root_id": MINDMAP_ROOT_ID})
+
+  if MINDMAP_ROOT_ID not in next_state.nodes:
+    root = MindmapNode(node_id=MINDMAP_ROOT_ID, parent_id=None, text="Mindmap")
+    actions.append(UpsertMindmapNodeAction(node=root))
+    next_state = _apply_mindmap_action(next_state, actions[-1])
+  if MINDMAP_ROOT_ID not in next_state.layout:
+    pos_action = SetMindmapNodePosAction(node_id=MINDMAP_ROOT_ID, pos=_mindmap_root_pos())
+    actions.append(pos_action)
+    next_state = _apply_mindmap_action(next_state, pos_action)
+
+  for idx, (node_id, title, legacy_card_id) in enumerate(MEETING_NATIVE_MINDMAP_CATEGORIES):
+    if node_id not in next_state.nodes:
+      cat = MindmapNode(node_id=node_id, parent_id=MINDMAP_ROOT_ID, text=title)
+      upsert = UpsertMindmapNodeAction(node=cat)
+      actions.append(upsert)
+      next_state = _apply_mindmap_action(next_state, upsert)
+    if node_id not in next_state.layout:
+      pos = _mindmap_category_pos(idx)
+      pos_action = SetMindmapNodePosAction(node_id=node_id, pos=pos)
+      actions.append(pos_action)
+      next_state = _apply_mindmap_action(next_state, pos_action)
+
+    raw_items = items_by_card_id.get(legacy_card_id) or []
+    if not raw_items:
+      continue
+
+    # Determine next leaf index for autoplace.
+    existing_child_count = sum(1 for n in next_state.nodes.values() if n.parent_id == node_id)
+    leaf_index = existing_child_count
+
+    for raw in raw_items:
+      text = raw.strip()
+      if not text:
+        continue
+      leaf_id = _mindmap_leaf_id(node_id, text)
+      if leaf_id in next_state.nodes:
+        continue
+
+      leaf = MindmapNode(node_id=leaf_id, parent_id=node_id, text=text)
+      upsert = UpsertMindmapNodeAction(node=leaf)
+      actions.append(upsert)
+      next_state = _apply_mindmap_action(next_state, upsert)
+
+      if leaf_id not in next_state.layout:
+        pos_action = SetMindmapNodePosAction(node_id=leaf_id, pos=_mindmap_leaf_pos(idx, leaf_index))
+        actions.append(pos_action)
+        next_state = _apply_mindmap_action(next_state, pos_action)
+      leaf_index += 1
+
+  return actions, next_state
+
+
+def _apply_mindmap_path_proposals(
+  state: MindmapState,
+  proposals: list[Any],
+  *,
+  max_new_nodes: int = 12,
+  max_new_root_topics: int = 4,
+) -> tuple[list[MindmapAction], MindmapState]:
+  seed_actions, next_state = _ensure_meeting_native_mindmap(state, {})
+  actions: list[MindmapAction] = list(seed_actions)
+
+  category_ids = {node_id for node_id, _, _ in MEETING_NATIVE_MINDMAP_CATEGORIES}
+  created = 0
+  created_root_topics = 0
+  seen_paths: set[str] = set()
+
+  capped_max_new_nodes = max(0, int(max_new_nodes))
+  capped_max_root_topics = max(0, int(max_new_root_topics))
+
+  for proposal in proposals:
+    raw_path = getattr(proposal, "path", None)
+    if not isinstance(raw_path, list) or not raw_path:
+      continue
+
+    parts: list[str] = []
+    for seg in raw_path:
+      if not isinstance(seg, str):
+        continue
+      cleaned = seg.strip()
+      if cleaned:
+        parts.append(cleaned[:120])
+
+    if not parts:
+      continue
+
+    signature = " > ".join(_mindmap_normalize_text(p) for p in parts if p.strip())
+    if not signature or signature in seen_paths:
+      continue
+    seen_paths.add(signature)
+
+    parent_id = next_state.root_id
+    for seg in parts:
+      reserved = _mindmap_route_reserved_segment(seg)
+      if reserved is not None and reserved in next_state.nodes:
+        parent_id = reserved
+        continue
+
+      # If a segment matches an existing top-level topic, reuse that topic rather than
+      # creating a duplicate under some other branch.
+      if parent_id != MINDMAP_ROOT_ID:
+        root_match = _mindmap_find_child_by_text(next_state, parent_id=MINDMAP_ROOT_ID, text=seg)
+        if root_match is not None:
+          parent_id = root_match
+          continue
+
+      if _mindmap_should_global_dedupe(seg):
+        global_match = _mindmap_find_any_node_by_exact_text(next_state, seg)
+        if global_match is not None:
+          parent_id = global_match
+          continue
+
+      existing = _mindmap_find_child_by_text(next_state, parent_id=parent_id, text=seg)
+      if existing is not None:
+        parent_id = existing
+        continue
+
+      if created >= capped_max_new_nodes:
+        break
+
+      node_id = _mindmap_path_id(parent_id, seg)
+
+      is_root_topic = parent_id == MINDMAP_ROOT_ID and node_id not in category_ids
+      if is_root_topic and created_root_topics >= capped_max_root_topics:
+        break
+
+      node = MindmapNode(node_id=node_id, parent_id=parent_id, text=seg)
+      upsert = UpsertMindmapNodeAction(node=node)
+      actions.append(upsert)
+      next_state = _apply_mindmap_action(next_state, upsert)
+      created += 1
+      if is_root_topic:
+        created_root_topics += 1
+
+      if node_id not in next_state.layout:
+        if parent_id == MINDMAP_ROOT_ID:
+          sibling_index = sum(
+            1
+            for n in next_state.nodes.values()
+            if n.parent_id == parent_id and n.node_id not in category_ids and n.node_id != node_id
+          )
+        else:
+          sibling_index = sum(1 for n in next_state.nodes.values() if n.parent_id == parent_id and n.node_id != node_id)
+        pos = _mindmap_auto_pos_for_child(next_state, parent_id=parent_id, sibling_index=sibling_index)
+        pos_action = SetMindmapNodePosAction(node_id=node_id, pos=pos)
+        actions.append(pos_action)
+        next_state = _apply_mindmap_action(next_state, pos_action)
+
+      parent_id = node_id
+
+  return actions, next_state
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
   val = os.getenv(name)
   if val is None:
@@ -264,6 +692,40 @@ def _env_int(name: str, default: int) -> int:
     return default
 
 
+def _model_provider(model: str) -> str:
+  model = (model or "").strip()
+  if ":" in model:
+    return model.split(":", 1)[0].strip().lower()
+  return model.lower()
+
+
+def _missing_ai_config_hint(model: str) -> str | None:
+  provider = _model_provider(model)
+  if provider == "openai":
+    if not os.getenv("OPENAI_API_KEY"):
+      return "set OPENAI_API_KEY (or set MEETINGGENIUS_MODEL to an Anthropic model + ANTHROPIC_API_KEY)."
+  if provider == "anthropic":
+    if not os.getenv("ANTHROPIC_API_KEY"):
+      return "set ANTHROPIC_API_KEY (or set MEETINGGENIUS_MODEL to an OpenAI model + OPENAI_API_KEY)."
+  return None
+
+
+def _humanize_ai_error(err: Exception, *, model: str) -> str:
+  text = str(err) or err.__class__.__name__
+  lower = text.lower()
+
+  hint = _missing_ai_config_hint(model)
+  if hint is not None:
+    return f"AI loop failed: missing provider credentials; {hint}"
+
+  if "insufficient_quota" in lower or "status_code: 429" in lower or "rate limit" in lower:
+    return "AI loop failed: provider quota/rate limit (HTTP 429)."
+  if "status_code: 401" in lower or "invalid_api_key" in lower:
+    return "AI loop failed: invalid API key (HTTP 401)."
+
+  return "AI loop failed."
+
+
 def _env_float(name: str, default: float) -> float:
   val = os.getenv(name)
   if val is None:
@@ -279,6 +741,14 @@ def _actions_to_json(actions: list[BoardAction]) -> list[dict[str, Any]]:
 
 
 def _state_to_json(state: BoardState) -> dict[str, Any]:
+  return state.model_dump(mode="json")
+
+
+def _mindmap_actions_to_json(actions: list[MindmapAction]) -> list[dict[str, Any]]:
+  return [a.model_dump(mode="json") for a in actions]
+
+
+def _mindmap_state_to_json(state: MindmapState) -> dict[str, Any]:
   return state.model_dump(mode="json")
 
 
@@ -351,13 +821,18 @@ class RealtimeState:
   clients_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
   transcript: deque[tuple[float, TranscriptEvent]] = field(default_factory=deque)
+  transcript_version: int = 0
   board_state: BoardState = field(default_factory=BoardState.empty)
+  mindmap_state: MindmapState = field(default_factory=MindmapState.empty)
   default_location: str | None = None
   no_browse_override: bool | None = None
+  mindmap_ai_override: bool | None = None
   version: int = 0
+  mindmap_version: int = 0
   state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
   ai_runner: "AIRunner" | None = None
+  mindmap_ai_runner: "MindmapAIRunner" | None = None
 
   async def add_client(self, ws: WebSocket) -> None:
     async with self.clients_lock:
@@ -395,14 +870,22 @@ class RealtimeState:
   async def reset(self) -> None:
     async with self.state_lock:
       self.transcript.clear()
+      self.transcript_version += 1
       self.board_state = BoardState.empty()
+      self.mindmap_state = MindmapState.empty()
       self.default_location = None
       self.no_browse_override = None
+      self.mindmap_ai_override = None
       self.version += 1
+      self.mindmap_version += 1
     if PERSISTOR is not None:
       await PERSISTOR.schedule_clear()
     await self.status("State reset.")
     await self.broadcast({"type": "board_actions", "actions": [], "state": _state_to_json(BoardState.empty())})
+    await self.broadcast(
+      {"type": "mindmap_actions", "actions": [], "state": _mindmap_state_to_json(MindmapState.empty())}
+    )
+    await self.broadcast({"type": "mindmap_status", "status": "idle"})
 
   async def add_transcript_event(self, event: TranscriptEvent) -> None:
     max_events = _env_int("MEETINGGENIUS_TRANSCRIPT_MAX_EVENTS", 50)
@@ -413,6 +896,7 @@ class RealtimeState:
 
     async with self.state_lock:
       self.transcript.append((now, event))
+      self.transcript_version += 1
       while self.transcript and self.transcript[0][0] < cutoff:
         self.transcript.popleft()
       while len(self.transcript) > max_events:
@@ -424,6 +908,48 @@ class RealtimeState:
       events = [e for _, e in self.transcript]
       state = self.board_state
     return version, events, state
+
+  async def snapshot_mindmap_ai(self) -> tuple[int, int, list[TranscriptEvent], MindmapState, bool | None]:
+    async with self.state_lock:
+      version = self.mindmap_version
+      transcript_version = self.transcript_version
+      events = [e for _, e in self.transcript]
+      state = self.mindmap_state
+      mindmap_ai = self.mindmap_ai_override
+    return version, transcript_version, events, state, mindmap_ai
+
+  async def get_mindmap_state(self) -> MindmapState:
+    async with self.state_lock:
+      return self.mindmap_state
+
+  async def apply_mindmap_actions_now(self, actions: list[MindmapAction]) -> tuple[int, MindmapState]:
+    async with self.state_lock:
+      next_state = self.mindmap_state
+      for action in actions:
+        next_state = _apply_mindmap_action(next_state, action)
+      self.mindmap_state = next_state
+      self.mindmap_version += 1
+      version = self.mindmap_version
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
+    return version, next_state
+
+  async def update_meeting_native_mindmap(self) -> tuple[list[MindmapAction], MindmapState] | None:
+    async with self.state_lock:
+      events = [e for _, e in self.transcript]
+      mindmap_state = self.mindmap_state
+
+      items_by_card_id = _extract_meeting_native_items(events)
+      actions, next_state = _ensure_meeting_native_mindmap(mindmap_state, items_by_card_id)
+      if not actions:
+        return None
+
+      self.mindmap_state = next_state
+      self.mindmap_version += 1
+
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
+    return actions, next_state
 
   async def board_export_payload(self) -> dict[str, Any]:
     async with self.state_lock:
@@ -472,6 +998,16 @@ class RealtimeState:
     if PERSISTOR is not None:
       await PERSISTOR.schedule_save()
 
+  async def get_mindmap_ai_override(self) -> bool | None:
+    async with self.state_lock:
+      return self.mindmap_ai_override
+
+  async def set_mindmap_ai_override(self, value: bool | None) -> None:
+    async with self.state_lock:
+      self.mindmap_ai_override = value
+    if PERSISTOR is not None:
+      await PERSISTOR.schedule_save()
+
   async def apply_board_actions(self, *, expected_version: int, actions: list[BoardAction]) -> BoardState | None:
     async with self.state_lock:
       if self.version != expected_version:
@@ -508,6 +1044,7 @@ class AIRunner:
     self._last_started_at = 0.0
     self._create_timestamps: deque[float] = deque()
     self._last_create_at = 0.0
+    self._warned_missing_ai_config = False
 
   async def request(self) -> None:
     async with self._lock:
@@ -530,8 +1067,9 @@ class AIRunner:
       try:
         await self._run_once()
       except Exception as e:
+        model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
         await self._state.error(
-          "AI loop failed.",
+          _humanize_ai_error(e, model=model),
           details={"error": str(e), "traceback": traceback.format_exc(limit=25)},
         )
 
@@ -547,7 +1085,13 @@ class AIRunner:
     no_browse = session_no_browse if session_no_browse is not None else _env_bool("MEETINGGENIUS_NO_BROWSE", False)
     policy = ToolingPolicy(no_browse=no_browse)
 
-    offline_meeting_native = _env_bool("MEETINGGENIUS_OFFLINE_MEETING_NATIVE", False) or model == "test"
+    missing_ai_hint = _missing_ai_config_hint(model)
+    offline_meeting_native = (
+      _env_bool("MEETINGGENIUS_OFFLINE_MEETING_NATIVE", False) or model == "test" or missing_ai_hint is not None
+    )
+    if missing_ai_hint is not None and not self._warned_missing_ai_config:
+      await self._state.status(f"AI disabled: {missing_ai_hint}")
+      self._warned_missing_ai_config = True
     if offline_meeting_native:
       items_by_card_id = _extract_meeting_native_items(events)
       actions, post_process_state = _meeting_native_create_or_update_actions(board_state, items_by_card_id, max_new_items=5)
@@ -827,13 +1371,156 @@ class AIRunner:
     return output, msg, next_timestamps, next_last_create
 
 
+class MindmapAIRunner:
+  def __init__(self, state: RealtimeState) -> None:
+    self._state = state
+    self._min_interval_s = _env_float("MEETINGGENIUS_MINDMAP_AI_MIN_INTERVAL_SECONDS", 2.5)
+    self._lock = asyncio.Lock()
+    self._task: asyncio.Task[None] | None = None
+    self._pending = False
+    self._last_started_at = 0.0
+    self._last_processed_transcript_version = -1
+    self._warned_missing_ai_config = False
+
+  async def request(self) -> None:
+    async with self._lock:
+      self._pending = True
+      if self._task is None or self._task.done():
+        self._task = asyncio.create_task(self._run_loop())
+
+  async def _run_loop(self) -> None:
+    while True:
+      async with self._lock:
+        if not self._pending:
+          return
+        self._pending = False
+        delay = max(0.0, self._min_interval_s - (time.time() - self._last_started_at))
+
+      if delay > 0:
+        await asyncio.sleep(delay)
+
+      self._last_started_at = time.time()
+      try:
+        await self._run_once()
+      except Exception as e:
+        model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
+        await self._state.error(
+          _humanize_ai_error(e, model=model),
+          details={"error": str(e), "traceback": traceback.format_exc(limit=25)},
+        )
+
+  async def _run_once(self) -> None:
+    _, transcript_version, events, mindmap_state, mindmap_ai_override = await self._state.snapshot_mindmap_ai()
+    if not events:
+      return
+    if transcript_version == self._last_processed_transcript_version:
+      return
+
+    mindmap_ai_enabled = (
+      mindmap_ai_override if mindmap_ai_override is not None else _env_bool("MEETINGGENIUS_MINDMAP_AI", True)
+    )
+    if not mindmap_ai_enabled:
+      return
+
+    model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
+    missing_ai_hint = _missing_ai_config_hint(model)
+    if missing_ai_hint is not None:
+      if not self._warned_missing_ai_config:
+        await self._state.status(f"Mindmap AI disabled: {missing_ai_hint}")
+        self._warned_missing_ai_config = True
+      return
+
+    if _env_bool("MEETINGGENIUS_OFFLINE_MINDMAP", False) or model == "test":
+      return
+
+    # Use a stable window: last N final events + the most recent interim event (if any).
+    final_events = [e for e in events if e.is_final]
+    window: list[TranscriptEvent] = final_events[-18:]
+    latest_interim = next((e for e in reversed(events) if not e.is_final), None)
+    if latest_interim is not None:
+      if not window or latest_interim.timestamp >= window[-1].timestamp:
+        if len(latest_interim.text.strip()) >= 24:
+          window = window + [latest_interim]
+
+    if not window:
+      return
+
+    policy = ToolingPolicy(no_browse=True)
+
+    try:
+      from meetinggenius.agents.mindmap_extractor import MindmapExtractorDeps, build_mindmap_extractor_agent
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError("Missing AI dependencies; run: `python -m pip install -e .`") from e
+
+    transcript_window = _format_transcript_window_for_mindmap_ai(window)
+    mindmap_summary = _format_mindmap_state_summary(mindmap_state)
+    prompt = "\n".join(
+      [
+        "Meeting transcript window:",
+        transcript_window,
+        "",
+        "Existing mindmap (reuse exact node text when it matches):",
+        mindmap_summary,
+        "",
+        "Return a JSON array of MindmapPathProposal objects.",
+      ]
+    ).strip()
+
+    extractor = build_mindmap_extractor_agent(model)
+    deps = MindmapExtractorDeps(policy=policy, mindmap_state=mindmap_state)
+    await self._state.broadcast({"type": "mindmap_status", "status": "running"})
+    try:
+      proposals = await asyncio.to_thread(lambda: extractor.run_sync(prompt, deps=deps).output)
+    finally:
+      await self._state.broadcast({"type": "mindmap_status", "status": "idle"})
+
+    has_any_final = any(e.is_final for e in events)
+    latest_event = events[-1] if events else None
+
+    max_new_nodes = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_NODES_PER_RUN", 12)
+    max_new_root_topics = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_ROOT_TOPICS_PER_RUN", 4)
+
+    if latest_event is not None and not latest_event.is_final:
+      if has_any_final:
+        max_new_nodes = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_NODES_PER_INTERIM_RUN", 3)
+        max_new_root_topics = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_ROOT_TOPICS_PER_INTERIM_RUN", 0)
+      else:
+        max_new_nodes = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_NODES_BEFORE_FINAL", 6)
+        max_new_root_topics = _env_int("MEETINGGENIUS_MINDMAP_MAX_NEW_ROOT_TOPICS_BEFORE_FINAL", 2)
+
+    actions, _ = _apply_mindmap_path_proposals(
+      mindmap_state,
+      proposals,
+      max_new_nodes=max_new_nodes,
+      max_new_root_topics=max_new_root_topics,
+    )
+    if actions:
+      _, applied_state = await self._state.apply_mindmap_actions_now(actions)
+      await self._state.broadcast(
+        {
+          "type": "mindmap_actions",
+          "actions": _mindmap_actions_to_json(actions),
+          "state": _mindmap_state_to_json(applied_state),
+        }
+      )
+
+    self._last_processed_transcript_version = transcript_version
+
+
 STATE = RealtimeState()
 STATE.ai_runner = AIRunner(STATE)
+STATE.mindmap_ai_runner = MindmapAIRunner(STATE)
 
 
-async def _persistence_snapshot() -> tuple[BoardState, str | None, bool | None]:
+async def _persistence_snapshot() -> tuple[BoardState, MindmapState, str | None, bool | None, bool | None]:
   async with STATE.state_lock:
-    return STATE.board_state, STATE.default_location, STATE.no_browse_override
+    return (
+      STATE.board_state,
+      STATE.mindmap_state,
+      STATE.default_location,
+      STATE.no_browse_override,
+      STATE.mindmap_ai_override,
+    )
 
 
 @app.on_event("startup")
@@ -853,24 +1540,31 @@ async def _load_persisted_state() -> None:
 
   try:
     raw_board = PERSIST_STORE.get_value_json(BOARD_STATE_KEY)
+    raw_mindmap = PERSIST_STORE.get_value_json(MINDMAP_STATE_KEY)
     raw_location = PERSIST_STORE.get_value_json(DEFAULT_LOCATION_KEY)
     raw_no_browse = PERSIST_STORE.get_value_json(NO_BROWSE_KEY)
+    raw_mindmap_ai = PERSIST_STORE.get_value_json(MINDMAP_AI_KEY)
     board_state = load_board_state(raw_board) if raw_board else None
+    mindmap_state = load_mindmap_state(raw_mindmap) if raw_mindmap else None
     default_location = load_default_location(raw_location) if raw_location else None
     no_browse = load_no_browse(raw_no_browse) if raw_no_browse else None
+    mindmap_ai = load_mindmap_ai(raw_mindmap_ai) if raw_mindmap_ai else None
   except Exception:
     print("WARN: failed to load persisted state; starting with defaults.")
     traceback.print_exc(limit=15)
     return
 
-  if board_state is None and default_location is None and no_browse is None:
+  if board_state is None and mindmap_state is None and default_location is None and no_browse is None and mindmap_ai is None:
     return
 
   async with STATE.state_lock:
     if board_state is not None:
       STATE.board_state = board_state
+    if mindmap_state is not None:
+      STATE.mindmap_state = mindmap_state
     STATE.default_location = default_location
     STATE.no_browse_override = no_browse
+    STATE.mindmap_ai_override = mindmap_ai
 
 
 @app.websocket("/ws")
@@ -881,6 +1575,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
     await ws.send_json({"type": "status", "message": "Connected."})
     _, _, board_state = await STATE.snapshot()
     await ws.send_json({"type": "board_actions", "actions": [], "state": _state_to_json(board_state)})
+    mindmap_state = await STATE.get_mindmap_state()
+    await ws.send_json({"type": "mindmap_actions", "actions": [], "state": _mindmap_state_to_json(mindmap_state)})
+    await ws.send_json({"type": "mindmap_status", "status": "idle"})
 
     while True:
       data = await ws.receive_json()
@@ -988,6 +1685,22 @@ async def ws_endpoint(ws: WebSocket) -> None:
           continue
 
         await STATE.add_transcript_event(event)
+        updated = await STATE.update_meeting_native_mindmap()
+        if updated is not None:
+          actions, next_state = updated
+          await STATE.broadcast(
+            {
+              "type": "mindmap_actions",
+              "actions": _mindmap_actions_to_json(actions),
+              "state": _mindmap_state_to_json(next_state),
+            }
+          )
+        mindmap_ai_override = await STATE.get_mindmap_ai_override()
+        mindmap_ai_enabled = (
+          mindmap_ai_override if mindmap_ai_override is not None else _env_bool("MEETINGGENIUS_MINDMAP_AI", True)
+        )
+        if mindmap_ai_enabled and STATE.mindmap_ai_runner is not None:
+          await STATE.mindmap_ai_runner.request()
         if event.is_final and STATE.ai_runner is not None:
           await STATE.ai_runner.request()
         continue
@@ -1024,18 +1737,38 @@ async def ws_endpoint(ws: WebSocket) -> None:
             continue
           no_browse = raw_no_browse
 
+        mindmap_ai: bool | None = None
+        if "mindmap_ai" in data:
+          raw_mindmap_ai = data.get("mindmap_ai")
+          if not isinstance(raw_mindmap_ai, bool):
+            await ws.send_json(
+              {
+                "type": "error",
+                "message": "Invalid set_session_context payload.",
+                "details": {"mindmap_ai": "Expected boolean."},
+              }
+            )
+            continue
+          mindmap_ai = raw_mindmap_ai
+
         await STATE.set_default_location(default_location.strip())
         if no_browse is not None:
           await STATE.set_no_browse_override(no_browse)
+        if mindmap_ai is not None:
+          await STATE.set_mindmap_ai_override(mindmap_ai)
+
+        parts: list[str] = [f"location={default_location.strip()}"]
+        if no_browse is not None:
+          parts.append(f"external_research={'off' if no_browse else 'on'}")
+        if mindmap_ai is not None:
+          parts.append(f"mindmap_ai={'on' if mindmap_ai else 'off'}")
+        updated = no_browse is not None or mindmap_ai is not None
 
         await ws.send_json(
           {
             "type": "status",
             "message": (
-              f"Session context updated (location={default_location.strip()}, "
-              f"external_research={'off' if no_browse else 'on'})."
-              if no_browse is not None
-              else f"Session default location set to {default_location.strip()}."
+              f"Session context updated ({', '.join(parts)})." if updated else f"Session default location set to {default_location.strip()}."
             ),
           }
         )
@@ -1078,6 +1811,53 @@ async def ws_endpoint(ws: WebSocket) -> None:
         _, next_state = await STATE.apply_board_actions_now([action])
         await STATE.broadcast(
           {"type": "board_actions", "actions": _actions_to_json([action]), "state": _state_to_json(next_state)}
+        )
+        continue
+
+      if msg_type == "client_mindmap_action":
+        raw_action = data.get("action")
+        if not isinstance(raw_action, dict):
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid client_mindmap_action payload.",
+              "details": {"action": "Expected JSON object."},
+            }
+          )
+          continue
+
+        try:
+          action = TypeAdapter(MindmapAction).validate_python(raw_action)
+        except ValidationError as e:
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Invalid mindmap action payload.",
+              "details": {"errors": e.errors()},
+            }
+          )
+          continue
+
+        if getattr(action, "type", None) not in {"set_node_pos", "set_collapsed", "rename_node"}:
+          await ws.send_json(
+            {
+              "type": "error",
+              "message": "Unsupported mindmap action type.",
+              "details": {
+                "allowed": ["set_node_pos", "set_collapsed", "rename_node"],
+                "type": getattr(action, "type", None),
+              },
+            }
+          )
+          continue
+
+        _, next_state = await STATE.apply_mindmap_actions_now([action])
+        await STATE.broadcast(
+          {
+            "type": "mindmap_actions",
+            "actions": _mindmap_actions_to_json([action]),
+            "state": _mindmap_state_to_json(next_state),
+          }
         )
         continue
 
