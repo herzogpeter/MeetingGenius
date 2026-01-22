@@ -400,6 +400,53 @@ def _mindmap_find_any_node_by_similar_text(state: MindmapState, text: str) -> st
   return best_id
 
 
+@dataclass(frozen=True)
+class _MindmapRect:
+  x: float
+  y: float
+  w: float
+  h: float
+
+
+def _mindmap_layout_node_rect(pos: MindmapPoint) -> _MindmapRect:
+  # Keep these in sync with the web UI defaults (apps/web/src/components/Mindmap.tsx).
+  node_w = float(_env_int("MEETINGGENIUS_MINDMAP_NODE_W", 240))
+  node_h = float(_env_int("MEETINGGENIUS_MINDMAP_NODE_H", 62))
+  pad = float(_env_int("MEETINGGENIUS_MINDMAP_NODE_PAD", 14))
+  return _MindmapRect(x=pos.x - pad, y=pos.y - pad, w=node_w + pad * 2, h=node_h + pad * 2)
+
+
+def _mindmap_rects_overlap(a: _MindmapRect, b: _MindmapRect) -> bool:
+  return not (a.x + a.w <= b.x or b.x + b.w <= a.x or a.y + a.h <= b.y or b.y + b.h <= a.y)
+
+
+def _mindmap_pick_non_overlapping_pos(state: MindmapState, *, node_id: str, desired: MindmapPoint) -> MindmapPoint:
+  # Incremental layout: only move the newly created node so the mindmap stays stable in realtime.
+  occupied: list[_MindmapRect] = []
+  for existing_id, pos in state.layout.items():
+    if existing_id == node_id:
+      continue
+    if existing_id not in state.nodes:
+      continue
+    occupied.append(_mindmap_layout_node_rect(pos))
+
+  if not occupied:
+    return desired
+
+  max_attempts = _env_int("MEETINGGENIUS_MINDMAP_LAYOUT_MAX_ATTEMPTS", 80)
+  step_y = float(_env_int("MEETINGGENIUS_MINDMAP_LAYOUT_STEP_Y", 86))
+
+  for attempt in range(max_attempts + 1):
+    candidate = MindmapPoint(x=desired.x, y=desired.y + attempt * step_y)
+    rect = _mindmap_layout_node_rect(candidate)
+    if any(_mindmap_rects_overlap(rect, other) for other in occupied):
+      continue
+    return candidate
+
+  # If we couldn't find a free slot, fall back to the desired position.
+  return desired
+
+
 def _mindmap_auto_pos_for_child(state: MindmapState, *, parent_id: str, sibling_index: int) -> MindmapPoint:
   if parent_id == MINDMAP_ROOT_ID:
     base_y = 60.0 + len(MEETING_NATIVE_MINDMAP_CATEGORIES) * 150.0
@@ -706,7 +753,9 @@ def _ensure_meeting_native_mindmap(state: MindmapState, items_by_card_id: dict[s
       next_state = _apply_mindmap_action(next_state, upsert)
 
       if leaf_id not in next_state.layout:
-        pos_action = SetMindmapNodePosAction(node_id=leaf_id, pos=_mindmap_leaf_pos(idx, leaf_index))
+        desired = _mindmap_leaf_pos(idx, leaf_index)
+        pos = _mindmap_pick_non_overlapping_pos(next_state, node_id=leaf_id, desired=desired)
+        pos_action = SetMindmapNodePosAction(node_id=leaf_id, pos=pos)
         actions.append(pos_action)
         next_state = _apply_mindmap_action(next_state, pos_action)
       leaf_index += 1
@@ -805,7 +854,8 @@ def _apply_mindmap_path_proposals(
           )
         else:
           sibling_index = sum(1 for n in next_state.nodes.values() if n.parent_id == parent_id and n.node_id != node_id)
-        pos = _mindmap_auto_pos_for_child(next_state, parent_id=parent_id, sibling_index=sibling_index)
+        desired = _mindmap_auto_pos_for_child(next_state, parent_id=parent_id, sibling_index=sibling_index)
+        pos = _mindmap_pick_non_overlapping_pos(next_state, node_id=node_id, desired=desired)
         pos_action = SetMindmapNodePosAction(node_id=node_id, pos=pos)
         actions.append(pos_action)
         next_state = _apply_mindmap_action(next_state, pos_action)
