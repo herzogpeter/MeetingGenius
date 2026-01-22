@@ -9,6 +9,7 @@ FRONTEND_PORT="${E2E_FRONTEND_PORT:-5174}"
 
 DB_PATH="${E2E_DB_PATH:-/tmp/meetinggenius-e2e.sqlite3}"
 MINDMAP_MIN_INTERVAL="${E2E_MINDMAP_MIN_INTERVAL_SECONDS:-0.9}"
+MINDMAP_EXTRACTOR="${E2E_MINDMAP_EXTRACTOR:-${MEETINGGENIUS_MINDMAP_EXTRACTOR:-stub}}"
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -81,6 +82,7 @@ EOF
 (
   cd "${ROOT_DIR}"
   MEETINGGENIUS_DB_PATH="${DB_PATH}" \
+  MEETINGGENIUS_MINDMAP_EXTRACTOR="${MINDMAP_EXTRACTOR}" \
   MEETINGGENIUS_MINDMAP_AI_MIN_INTERVAL_SECONDS="${MINDMAP_MIN_INTERVAL}" \
   exec "${PY}" -m uvicorn meetinggenius.server:app --host "${HOST}" --port "${BACKEND_PORT}"
 ) &
@@ -104,4 +106,3 @@ while true; do
   fi
   sleep 0.25
 done
-

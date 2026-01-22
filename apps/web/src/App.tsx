@@ -17,18 +17,9 @@ import {
   recordRunAiClicked,
 } from './telemetry/sessionTelemetry'
 
-const YEARS_STORAGE_KEY = 'mg.assumptions.years'
 const NO_BROWSE_STORAGE_KEY = 'mg.assumptions.noBrowse'
 const MINDMAP_AI_STORAGE_KEY = 'mg.assumptions.mindmapAi'
 const VIEW_MODE_STORAGE_KEY = 'mg.viewMode'
-const YEAR_OPTIONS = [5, 10, 15] as const
-
-function parseYears(raw: string | null): number | null {
-  if (!raw) return null
-  const num = Number.parseInt(raw, 10)
-  if (Number.isNaN(num)) return null
-  return YEAR_OPTIONS.includes(num as (typeof YEAR_OPTIONS)[number]) ? num : null
-}
 
 function parseBool(raw: string | null): boolean | null {
   if (!raw) return null
@@ -70,15 +61,6 @@ function App() {
       return raw === 'mindmap' ? 'mindmap' : 'whiteboard'
     } catch {
       return 'whiteboard'
-    }
-  })
-  const [location, setLocation] = useState<string>('Seattle')
-  const [locationDraft, setLocationDraft] = useState<string>('Seattle')
-  const [years, setYears] = useState<number>(() => {
-    try {
-      return parseYears(window.localStorage.getItem(YEARS_STORAGE_KEY)) ?? 10
-    } catch {
-      return 10
     }
   })
   const [noBrowse, setNoBrowse] = useState<boolean>(() => {
@@ -125,14 +107,6 @@ function App() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(YEARS_STORAGE_KEY, String(years))
-    } catch {
-      // ignore local storage failures
-    }
-  }, [years])
-
-  useEffect(() => {
-    try {
       window.localStorage.setItem(NO_BROWSE_STORAGE_KEY, String(noBrowse))
     } catch {
       // ignore local storage failures
@@ -168,9 +142,9 @@ function App() {
       return
     }
     if (initialContextSentRef.current) return
-    const sent = sendSessionContext({ defaultLocation: location, noBrowse, years, mindmapAi })
+    const sent = sendSessionContext({ noBrowse, mindmapAi })
     if (sent) initialContextSentRef.current = true
-  }, [connectionState, location, mindmapAi, noBrowse, sendSessionContext, years])
+  }, [connectionState, mindmapAi, noBrowse, sendSessionContext])
 
   const effectiveDismissed = useMemo(() => {
     const dismissed = new Set<string>([...locallyDismissed])
@@ -204,24 +178,6 @@ function App() {
     pendingImportRef.current = null
   }, [lastError])
 
-  const applyLocation = () => {
-    const nextLocation = locationDraft.trim()
-    if (!nextLocation) return
-    const sent = sendSessionContext({ defaultLocation: nextLocation, noBrowse, years, mindmapAi })
-    if (!sent) return
-
-    if (nextLocation !== location) {
-      recordAssumptionsChanged({
-        changes: { location: { prev: location, next: nextLocation } },
-        current: { location: nextLocation, years, no_browse: noBrowse, mindmap_ai: mindmapAi },
-      })
-    }
-
-    setLocation(nextLocation)
-    setLocationDraft(nextLocation)
-    showClientStatus(`Location set: ${nextLocation}`)
-  }
-
   const refreshLastRequest = () => {
     if (connectionState !== 'open') return
     if (!lastFinalTranscriptEventSent) return
@@ -229,20 +185,15 @@ function App() {
     const baseText = lastFinalTranscriptEventSent.text
       .replace(/\s*\(Use location=[^,]+,\s*years=\d+\.\)\s*$/u, '')
       .trim()
-
-    const suffix = `(Use location=${location}, years=${years}.)`
+    const nextText = baseText || lastFinalTranscriptEventSent.text
     const event: TranscriptEvent = {
       timestamp: new Date().toISOString(),
       speaker: lastFinalTranscriptEventSent.speaker,
-      text: `${baseText} ${suffix}`.trim(),
+      text: nextText,
       is_final: true,
     }
 
-    recordRefreshLastRequestClicked({
-      location,
-      years,
-      lastEvent: lastFinalTranscriptEventSent,
-    })
+    recordRefreshLastRequestClicked({ lastEvent: lastFinalTranscriptEventSent })
 
     sendTranscriptEvent(event)
     setTranscript((prev) => [...prev, event])
@@ -309,10 +260,6 @@ function App() {
       pendingImportTimerRef.current = null
     }, 5000)
 
-    if (typeof defaultLocationFromFile === 'string' && defaultLocationFromFile.trim()) {
-      setLocation(defaultLocationFromFile.trim())
-      setLocationDraft(defaultLocationFromFile.trim())
-    }
     if (typeof noBrowseFromFile === 'boolean') {
       setNoBrowse(noBrowseFromFile)
     }
@@ -373,61 +320,10 @@ function App() {
           <div className="mgHeaderAssumptions">
             <div className="mgHeaderAssumptionsLabel">Assumptions</div>
             <div className="mgHeaderAssumptionsChips">
-              <div className="mgPill mgPill--idle">Location: {location}</div>
-              <div className="mgPill mgPill--idle">Years: {years}</div>
               <div className="mgPill mgPill--idle">External research: {noBrowse ? 'Off' : 'On'}</div>
               <div className="mgPill mgPill--idle">Mindmap AI: {mindmapAi ? 'On' : 'Off'}</div>
             </div>
             <div className="mgHeaderAssumptionsControls">
-              <div className="mgHeaderLocation">
-                <label className="mgHeaderLabel" htmlFor="mgLocationInput">
-                  Location
-                </label>
-                <input
-                  id="mgLocationInput"
-                  className="mgInput mgInput--small"
-                  value={locationDraft}
-                  onChange={(e) => setLocationDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') applyLocation()
-                  }}
-                />
-                <button
-                  className="mgButton mgButton--small"
-                  disabled={connectionState !== 'open'}
-                  onClick={applyLocation}
-                >
-                  Set
-                </button>
-              </div>
-
-              <div className="mgHeaderYears">
-                <label className="mgHeaderLabel" htmlFor="mgYearsSelect">
-                  Years
-                </label>
-                <select
-                  id="mgYearsSelect"
-                  className="mgInput mgInput--small mgSelect--small"
-                  value={years}
-                  onChange={(e) => {
-                    const nextYears = Number.parseInt(e.target.value, 10)
-                    if (Number.isNaN(nextYears) || nextYears === years) return
-                    recordAssumptionsChanged({
-                      changes: { years: { prev: years, next: nextYears } },
-                      current: { location, years: nextYears, no_browse: noBrowse, mindmap_ai: mindmapAi },
-                    })
-                    setYears(nextYears)
-                    showClientStatus(`Years set: ${nextYears}`)
-                  }}
-                >
-                  {YEAR_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               <div className="mgHeaderResearch">
                 <label className="mgHeaderLabel" htmlFor="mgResearchSelect">
                   External research
@@ -441,13 +337,11 @@ function App() {
                     if (nextNoBrowse === noBrowse) return
                     recordAssumptionsChanged({
                       changes: { no_browse: { prev: noBrowse, next: nextNoBrowse } },
-                      current: { location, years, no_browse: nextNoBrowse, mindmap_ai: mindmapAi },
+                      current: { no_browse: nextNoBrowse, mindmap_ai: mindmapAi },
                     })
                     setNoBrowse(nextNoBrowse)
                     const sent = sendSessionContext({
-                      defaultLocation: location,
                       noBrowse: nextNoBrowse,
-                      years,
                       mindmapAi,
                     })
                     if (sent) showClientStatus(`External research ${nextNoBrowse ? 'Off' : 'On'}`)
@@ -471,13 +365,11 @@ function App() {
                     if (nextMindmapAi === mindmapAi) return
                     recordAssumptionsChanged({
                       changes: { mindmap_ai: { prev: mindmapAi, next: nextMindmapAi } },
-                      current: { location, years, no_browse: noBrowse, mindmap_ai: nextMindmapAi },
+                      current: { no_browse: noBrowse, mindmap_ai: nextMindmapAi },
                     })
                     setMindmapAi(nextMindmapAi)
                     const sent = sendSessionContext({
-                      defaultLocation: location,
                       noBrowse,
-                      years,
                       mindmapAi: nextMindmapAi,
                     })
                     if (sent) showClientStatus(`Mindmap AI ${nextMindmapAi ? 'On' : 'Off'}`)

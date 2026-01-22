@@ -30,6 +30,7 @@ from meetinggenius.contracts import (
   BoardState,
   CardKind,
   CreateCardAction,
+  DeleteMindmapSubtreeAction,
   ListItem,
   ListCard,
   ListCardProps,
@@ -37,6 +38,7 @@ from meetinggenius.contracts import (
   MindmapNode,
   MindmapPoint,
   MindmapState,
+  ReparentMindmapNodeAction,
   RenameMindmapNodeAction,
   SetMindmapNodeCollapsedAction,
   SetMindmapNodePosAction,
@@ -383,6 +385,111 @@ def _format_transcript_window_for_mindmap_ai(events: list[TranscriptEvent]) -> s
     who = f"{e.speaker}: " if e.speaker else ""
     lines.append(f"- [{e.timestamp.isoformat()}] ({status}) {who}{e.text}")
   return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class _StubMindmapPathProposal:
+  path: list[str]
+
+
+def _mindmap_extractor_mode() -> str:
+  mode = (os.getenv("MEETINGGENIUS_MINDMAP_EXTRACTOR") or "").strip().lower()
+  if mode:
+    return mode
+  if _env_bool("MEETINGGENIUS_FAKE_AI", False):
+    return "stub"
+  return "ai"
+
+
+def _stub_strip_timestamp_and_speaker(text: str) -> str:
+  cleaned = re.sub(r"^\s*\[\d{2}:\d{2}\]\s*", "", text).strip()
+  cleaned = re.sub(r"^[A-Za-z][A-Za-z0-9 .'-]{0,32}:\s+", "", cleaned)
+  return cleaned.strip()
+
+
+def _stub_sentence_candidates(text: str) -> list[str]:
+  text = text.replace("\r", "\n")
+  sentences: list[str] = []
+  for raw_line in re.split(r"\n+", text):
+    line = raw_line.strip()
+    if not line:
+      continue
+    line = _stub_strip_timestamp_and_speaker(line)
+    if not line:
+      continue
+    line = line.replace("\u2014", ". ")
+    for part in re.split(r"[.!?]\s+", line):
+      part = part.strip()
+      if not part:
+        continue
+      if len(part.split()) > 18 and "," in part:
+        sentences.extend(seg.strip() for seg in part.split(",") if seg.strip())
+      else:
+        sentences.append(part)
+  return sentences
+
+
+def _stub_phrase_candidates(sentence: str) -> list[str]:
+  cleaned = sentence.strip().strip("\"'`")
+  cleaned = cleaned.strip(" ,.;:()[]")
+  if ":" in cleaned:
+    prefix, rest = cleaned.split(":", 1)
+    if len(prefix.split()) <= 3:
+      cleaned = rest.strip()
+  tokens = [t for t in cleaned.split() if t]
+  if not tokens:
+    return []
+  max_words = 3
+  min_words = 3
+  phrases: list[str] = []
+  for idx in range(0, len(tokens), max_words):
+    chunk = tokens[idx : idx + max_words]
+    if len(chunk) < min_words:
+      continue
+    phrases.append(" ".join(chunk))
+    if len(phrases) >= 6:
+      break
+  if not phrases:
+    phrases.append(" ".join(tokens[:8]))
+  return [p.strip(" ,.;:()[]") for p in phrases if p.strip(" ,.;:()[]")]
+
+
+def _stub_mindmap_path_proposals(
+  events: list[TranscriptEvent],
+  *,
+  max_phrases: int = 16,
+  topic: str = "Transcript",
+) -> list[_StubMindmapPathProposal]:
+  if max_phrases <= 0:
+    return []
+  seen: set[str] = set()
+  phrases: list[str] = []
+  for event in events:
+    for sentence in _stub_sentence_candidates(event.text):
+      for phrase in _stub_phrase_candidates(sentence):
+        if not phrase:
+          continue
+        if len(phrase.split()) < 3 and len(phrase) < 12:
+          continue
+        norm = _normalize_title(phrase)
+        if not norm or norm in seen:
+          continue
+        seen.add(norm)
+        phrases.append(phrase)
+        if len(phrases) >= max_phrases:
+          break
+      if len(phrases) >= max_phrases:
+        break
+    if len(phrases) >= max_phrases:
+      break
+  if not phrases:
+    fallback = next(
+      (p for e in events for p in _stub_phrase_candidates(e.text) if p),
+      "",
+    )
+    if fallback:
+      phrases.append(fallback)
+  return [_StubMindmapPathProposal(path=[topic, phrase]) for phrase in phrases]
 
 
 def _format_mindmap_state_summary(state: MindmapState, *, max_nodes: int = 60, max_children: int = 12) -> str:
@@ -815,6 +922,14 @@ def _find_similar_card_id(state: BoardState, *, kind: Any, title: str) -> str | 
   return best_id
 
 
+def _normalize_transcript_text(text: str) -> str:
+  return " ".join(text.strip().lower().split())
+
+
+def _normalize_transcript_speaker(speaker: str | None) -> str:
+  return " ".join((speaker or "").strip().lower().split())
+
+
 @dataclass
 class RealtimeState:
   clients: set[WebSocket] = field(default_factory=set)
@@ -895,8 +1010,27 @@ class RealtimeState:
     cutoff = now - max_seconds
 
     async with self.state_lock:
-      self.transcript.append((now, event))
-      self.transcript_version += 1
+      replaced = False
+      if event.event_id:
+        for idx, (ts, existing) in enumerate(self.transcript):
+          if existing.event_id == event.event_id:
+            self.transcript[idx] = (ts, event)
+            self.transcript_version += 1
+            replaced = True
+            break
+
+      if not replaced:
+        if not event.event_id and self.transcript:
+          _, last_event = self.transcript[-1]
+          if (
+            _normalize_transcript_speaker(last_event.speaker)
+            == _normalize_transcript_speaker(event.speaker)
+            and _normalize_transcript_text(last_event.text) == _normalize_transcript_text(event.text)
+          ):
+            return
+
+        self.transcript.append((now, event))
+        self.transcript_version += 1
       while self.transcript and self.transcript[0][0] < cutoff:
         self.transcript.popleft()
       while len(self.transcript) > max_events:
@@ -1422,16 +1556,7 @@ class MindmapAIRunner:
     if not mindmap_ai_enabled:
       return
 
-    model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
-    missing_ai_hint = _missing_ai_config_hint(model)
-    if missing_ai_hint is not None:
-      if not self._warned_missing_ai_config:
-        await self._state.status(f"Mindmap AI disabled: {missing_ai_hint}")
-        self._warned_missing_ai_config = True
-      return
-
-    if _env_bool("MEETINGGENIUS_OFFLINE_MINDMAP", False) or model == "test":
-      return
+    extractor_mode = _mindmap_extractor_mode()
 
     # Use a stable window: last N final events + the most recent interim event (if any).
     final_events = [e for e in events if e.is_final]
@@ -1445,34 +1570,53 @@ class MindmapAIRunner:
     if not window:
       return
 
-    policy = ToolingPolicy(no_browse=True)
+    if extractor_mode == "stub":
+      stub_max = _env_int("MEETINGGENIUS_MINDMAP_STUB_MAX_PHRASES", 16)
+      await self._state.broadcast({"type": "mindmap_status", "status": "running"})
+      try:
+        proposals = _stub_mindmap_path_proposals(window, max_phrases=stub_max)
+      finally:
+        await self._state.broadcast({"type": "mindmap_status", "status": "idle"})
+    else:
+      model = os.getenv("MEETINGGENIUS_MODEL") or "openai:gpt-4o-mini"
+      missing_ai_hint = _missing_ai_config_hint(model)
+      if missing_ai_hint is not None:
+        if not self._warned_missing_ai_config:
+          await self._state.status(f"Mindmap AI disabled: {missing_ai_hint}")
+          self._warned_missing_ai_config = True
+        return
 
-    try:
-      from meetinggenius.agents.mindmap_extractor import MindmapExtractorDeps, build_mindmap_extractor_agent
-    except ModuleNotFoundError as e:
-      raise ModuleNotFoundError("Missing AI dependencies; run: `python -m pip install -e .`") from e
+      if _env_bool("MEETINGGENIUS_OFFLINE_MINDMAP", False) or model == "test":
+        return
 
-    transcript_window = _format_transcript_window_for_mindmap_ai(window)
-    mindmap_summary = _format_mindmap_state_summary(mindmap_state)
-    prompt = "\n".join(
-      [
-        "Meeting transcript window:",
-        transcript_window,
-        "",
-        "Existing mindmap (reuse exact node text when it matches):",
-        mindmap_summary,
-        "",
-        "Return a JSON array of MindmapPathProposal objects.",
-      ]
-    ).strip()
+      policy = ToolingPolicy(no_browse=True)
 
-    extractor = build_mindmap_extractor_agent(model)
-    deps = MindmapExtractorDeps(policy=policy, mindmap_state=mindmap_state)
-    await self._state.broadcast({"type": "mindmap_status", "status": "running"})
-    try:
-      proposals = await asyncio.to_thread(lambda: extractor.run_sync(prompt, deps=deps).output)
-    finally:
-      await self._state.broadcast({"type": "mindmap_status", "status": "idle"})
+      try:
+        from meetinggenius.agents.mindmap_extractor import MindmapExtractorDeps, build_mindmap_extractor_agent
+      except ModuleNotFoundError as e:
+        raise ModuleNotFoundError("Missing AI dependencies; run: `python -m pip install -e .`") from e
+
+      transcript_window = _format_transcript_window_for_mindmap_ai(window)
+      mindmap_summary = _format_mindmap_state_summary(mindmap_state)
+      prompt = "\n".join(
+        [
+          "Meeting transcript window:",
+          transcript_window,
+          "",
+          "Existing mindmap (reuse exact node text when it matches):",
+          mindmap_summary,
+          "",
+          "Return a JSON array of MindmapPathProposal objects.",
+        ]
+      ).strip()
+
+      extractor = build_mindmap_extractor_agent(model)
+      deps = MindmapExtractorDeps(policy=policy, mindmap_state=mindmap_state)
+      await self._state.broadcast({"type": "mindmap_status", "status": "running"})
+      try:
+        proposals = await asyncio.to_thread(lambda: extractor.run_sync(prompt, deps=deps).output)
+      finally:
+        await self._state.broadcast({"type": "mindmap_status", "status": "idle"})
 
     has_any_final = any(e.is_final for e in events)
     latest_event = events[-1] if events else None
@@ -1712,16 +1856,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
         continue
 
       if msg_type == "set_session_context":
-        default_location = data.get("default_location")
-        if not isinstance(default_location, str) or not default_location.strip():
-          await ws.send_json(
-            {
-              "type": "error",
-              "message": "Invalid set_session_context payload.",
-              "details": {"default_location": "Expected non-empty string."},
-            }
-          )
-          continue
+        has_default_location = "default_location" in data
+        default_location: str | None = None
+        if has_default_location:
+          raw_location = data.get("default_location")
+          if not isinstance(raw_location, str) or not raw_location.strip():
+            await ws.send_json(
+              {
+                "type": "error",
+                "message": "Invalid set_session_context payload.",
+                "details": {"default_location": "Expected non-empty string."},
+              }
+            )
+            continue
+          default_location = raw_location.strip()
 
         no_browse: bool | None = None
         if "no_browse" in data:
@@ -1751,13 +1899,21 @@ async def ws_endpoint(ws: WebSocket) -> None:
             continue
           mindmap_ai = raw_mindmap_ai
 
-        await STATE.set_default_location(default_location.strip())
+        if has_default_location and default_location is not None:
+          await STATE.set_default_location(default_location)
+        else:
+          current_default = await STATE.get_default_location()
+          if current_default is None:
+            fallback_location = os.getenv("MEETINGGENIUS_DEFAULT_LOCATION") or "Seattle"
+            await STATE.set_default_location(fallback_location)
         if no_browse is not None:
           await STATE.set_no_browse_override(no_browse)
         if mindmap_ai is not None:
           await STATE.set_mindmap_ai_override(mindmap_ai)
 
-        parts: list[str] = [f"location={default_location.strip()}"]
+        parts: list[str] = []
+        if has_default_location and default_location is not None:
+          parts.append(f"location={default_location}")
         if no_browse is not None:
           parts.append(f"external_research={'off' if no_browse else 'on'}")
         if mindmap_ai is not None:
@@ -1768,7 +1924,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
           {
             "type": "status",
             "message": (
-              f"Session context updated ({', '.join(parts)})." if updated else f"Session default location set to {default_location.strip()}."
+              f"Session context updated ({', '.join(parts)})."
+              if updated
+              else (
+                f"Session default location set to {default_location}." if has_default_location else "Session context updated."
+              )
             ),
           }
         )
@@ -1838,13 +1998,25 @@ async def ws_endpoint(ws: WebSocket) -> None:
           )
           continue
 
-        if getattr(action, "type", None) not in {"set_node_pos", "set_collapsed", "rename_node"}:
+        if getattr(action, "type", None) not in {
+          "set_node_pos",
+          "set_collapsed",
+          "rename_node",
+          "reparent_node",
+          "delete_subtree",
+        }:
           await ws.send_json(
             {
               "type": "error",
               "message": "Unsupported mindmap action type.",
               "details": {
-                "allowed": ["set_node_pos", "set_collapsed", "rename_node"],
+                "allowed": [
+                  "set_node_pos",
+                  "set_collapsed",
+                  "rename_node",
+                  "reparent_node",
+                  "delete_subtree",
+                ],
                 "type": getattr(action, "type", None),
               },
             }

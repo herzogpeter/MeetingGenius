@@ -35,10 +35,8 @@ export function useBoardSocket(): {
   mindmapStatus: MindmapStatus
   sendTranscriptEvent: (event: TranscriptEvent) => void
   sendSessionContext: (args: {
-    defaultLocation: string
-    noBrowse: boolean
-    years?: number
-    month?: number
+    defaultLocation?: string
+    noBrowse?: boolean
     mindmapAi?: boolean
   }) => boolean
   sendExportBoard: () => boolean
@@ -81,15 +79,15 @@ export function useBoardSocket(): {
   )
 
   const sendSessionContext = useCallback(
-    (args: { defaultLocation: string; noBrowse: boolean; years?: number; month?: number; mindmapAi?: boolean }) =>
-      sendMessage({
+    (args: { defaultLocation?: string; noBrowse?: boolean; mindmapAi?: boolean }) => {
+      const payload: OutgoingMessage = {
         type: 'set_session_context',
-        default_location: args.defaultLocation,
-        no_browse: args.noBrowse,
-        years: args.years,
-        month: args.month,
-        mindmap_ai: args.mindmapAi,
-      }),
+        ...(args.defaultLocation !== undefined ? { default_location: args.defaultLocation } : {}),
+        ...(args.noBrowse !== undefined ? { no_browse: args.noBrowse } : {}),
+        ...(args.mindmapAi !== undefined ? { mindmap_ai: args.mindmapAi } : {}),
+      }
+      return sendMessage(payload)
+    },
     [sendMessage],
   )
 

@@ -12,6 +12,7 @@ class TranscriptEvent(BaseModel):
   model_config = ConfigDict(extra="forbid")
 
   timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+  event_id: str | None = None
   speaker: str | None = None
   text: str
   confidence: float | None = Field(default=None, ge=0.0, le=1.0)

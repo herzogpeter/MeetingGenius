@@ -38,3 +38,48 @@ jobs:
         run: |
           npm ci
           npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend (editable)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Install Playwright browsers
+        working-directory: apps/web
+        run: npx playwright install --with-deps
+      - name: Run mindmap replay (strict)
+        working-directory: apps/web
+        env:
+          E2E_STRICT: "1"
+          E2E_MIN_NODES: "12"
+          E2E_MIN_UNIQUE_RATIO: "0.5"
+          E2E_MINDMAP_EXTRACTOR: "stub"
+        run: npm run test:e2e -- e2e/mindmap-replay.spec.ts
+      - name: Upload Playwright report (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: warn
+      - name: Upload mindmap metrics (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mindmap-metrics
+          path: apps/web/test-results/**/mindmap-metrics.json
+          if-no-files-found: warn

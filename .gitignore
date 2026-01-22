@@ -36,6 +36,9 @@ htmlcov/
 # Local secrets
 .env
 
+# Local TLS certs
+.certs/
+
 # Node (monorepo-safe)
 **/node_modules/
 **/dist/

@@ -54,18 +54,14 @@ type SessionTelemetryEvent =
       type: 'assumptions_changed'
       ts: string
       changes: {
-        location?: { prev: string; next: string }
-        years?: { prev: number; next: number }
         no_browse?: { prev: boolean; next: boolean }
         mindmap_ai?: { prev: boolean; next: boolean }
       }
-      current: { location: string; years: number; no_browse: boolean; mindmap_ai: boolean }
+      current: { no_browse: boolean; mindmap_ai: boolean }
     }
   | {
       type: 'refresh_last_request_clicked'
       ts: string
-      location: string
-      years: number
       last_event?: { timestamp: string; speaker: string | null; text_preview: string }
     }
   | {
@@ -225,27 +221,19 @@ export function recordCardRectChanged(args: {
 
 export function recordAssumptionsChanged(args: {
   changes: {
-    location?: { prev: string; next: string }
-    years?: { prev: number; next: number }
     no_browse?: { prev: boolean; next: boolean }
     mindmap_ai?: { prev: boolean; next: boolean }
   }
-  current: { location: string; years: number; no_browse: boolean; mindmap_ai: boolean }
+  current: { no_browse: boolean; mindmap_ai: boolean }
 }): void {
   pushEvent({ type: 'assumptions_changed', ts: nowIso(), changes: args.changes, current: args.current })
 }
 
-export function recordRefreshLastRequestClicked(args: {
-  location: string
-  years: number
-  lastEvent: TranscriptEvent | null
-}): void {
+export function recordRefreshLastRequestClicked(args: { lastEvent: TranscriptEvent | null }): void {
   const textPreview = args.lastEvent?.text ? args.lastEvent.text.slice(0, 240) : undefined
   pushEvent({
     type: 'refresh_last_request_clicked',
     ts: nowIso(),
-    location: args.location,
-    years: args.years,
     last_event: args.lastEvent
       ? { timestamp: args.lastEvent.timestamp, speaker: args.lastEvent.speaker, text_preview: textPreview ?? '' }
       : undefined,

@@ -12,6 +12,7 @@ const rawBackendPort = Number.parseInt(process.env.E2E_BACKEND_PORT ?? '8010', 1
 const frontendPort = Number.isFinite(rawFrontendPort) ? rawFrontendPort : 5174
 const backendPort = Number.isFinite(rawBackendPort) ? rawBackendPort : 8010
 const baseURL = `http://${host}:${frontendPort}`
+const reporter = process.env.CI ? [['html', { open: 'never' }], ['list']] : 'list'
 
 export default defineConfig({
   testDir: './e2e',
@@ -19,6 +20,7 @@ export default defineConfig({
   timeout: 3 * 60 * 1000,
   expect: { timeout: 30_000 },
   retries: process.env.CI ? 1 : 0,
+  reporter,
   use: {
     baseURL,
     trace: 'retain-on-failure',

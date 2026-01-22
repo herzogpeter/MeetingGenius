@@ -52,6 +52,12 @@ function formatSpeechError(err: string | null): string | null {
   return `Speech recognition error: ${err}`
 }
 
+const INTERIM_THROTTLE_MS = 350
+
+function createSessionId(): string {
+  return `sr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 export function useSpeechRecognition(args: {
   speaker: string
   lang: string
@@ -69,6 +75,8 @@ export function useSpeechRecognition(args: {
   const onTranscriptEventRef = useRef(args.onTranscriptEvent)
   const langRef = useRef(args.lang)
   const sendInterimResultsRef = useRef(args.sendInterimResults)
+  const sessionIdRef = useRef<string | null>(null)
+  const lastInterimSentRef = useRef<Map<string, number>>(new Map())
 
   const [status, setStatus] = useState<SpeechRecognitionStatus>('idle')
   const [rawError, setRawError] = useState<string | null>(null)
@@ -140,6 +148,9 @@ export function useSpeechRecognition(args: {
       recognition.onresult = (event) => {
         const speaker = speakerRef.current.trim() ? speakerRef.current.trim() : 'User'
         const allowInterim = sendInterimResultsRef.current
+        const sessionId = sessionIdRef.current ?? createSessionId()
+        sessionIdRef.current = sessionId
+        const now = Date.now()
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i]
@@ -149,6 +160,15 @@ export function useSpeechRecognition(args: {
 
           const isFinal = Boolean(result?.isFinal)
           if (!isFinal && !allowInterim) continue
+          const eventId = `${sessionId}:${i}`
+
+          if (!isFinal) {
+            const lastSentAt = lastInterimSentRef.current.get(eventId) ?? 0
+            if (now - lastSentAt < INTERIM_THROTTLE_MS) continue
+            lastInterimSentRef.current.set(eventId, now)
+          } else {
+            lastInterimSentRef.current.delete(eventId)
+          }
 
           const confidence =
             typeof alternative?.confidence === 'number' && Number.isFinite(alternative.confidence)
@@ -157,6 +177,7 @@ export function useSpeechRecognition(args: {
 
           onTranscriptEventRef.current({
             timestamp: new Date().toISOString(),
+            event_id: eventId,
             speaker,
             text,
             confidence,
@@ -172,6 +193,8 @@ export function useSpeechRecognition(args: {
     setRawError(null)
     recognition.lang = langRef.current
     recognition.interimResults = sendInterimResultsRef.current
+    sessionIdRef.current = createSessionId()
+    lastInterimSentRef.current.clear()
 
     try {
       recognition.start()
@@ -209,4 +232,3 @@ export function useSpeechRecognition(args: {
     [errorMessage, isSupported, start, status, stop],
   )
 }
-

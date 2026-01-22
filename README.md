@@ -121,6 +121,27 @@ Demo prompts:
 - Planning: `Turn our planning discussion into a prioritized backlog with owners and rough estimates.`
 - Sales call: `Extract buyer pain points, objections, and next steps from this sales call.`
 
+## LAN mic mode (HTTPS + WSS)
+
+Chrome requires a secure origin for live mic mode on another device. Use the HTTPS demo script:
+
+```bash
+./demo-https.sh
+```
+
+If LAN IP auto-detection fails (or you want to pin it):
+
+```bash
+BIND_HOST=0.0.0.0 PUBLIC_HOST=192.168.1.50 ./demo-https.sh
+```
+
+Install mkcert and trust the local CA (one-time):
+
+```bash
+brew install mkcert
+mkcert -install
+```
+
 ## Run a quick simulation
 
 ```bash

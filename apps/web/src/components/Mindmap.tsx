@@ -5,10 +5,43 @@ import type { MindmapAction, MindmapNode, MindmapPoint, MindmapState } from '../
 const NODE_W = 240
 const NODE_H = 62
 
+type NodeRect = { x: number; y: number; w: number; h: number }
+
 function fallbackPos(depth: number, index: number): MindmapPoint {
   const x = 40 + depth * 320
   const y = 40 + index * 86
   return { x, y }
+}
+
+function rectForPos(pos: MindmapPoint): NodeRect {
+  return { x: pos.x, y: pos.y, w: NODE_W, h: NODE_H }
+}
+
+function overlapArea(a: NodeRect, b: NodeRect): number {
+  const xOverlap = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+  const yOverlap = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+  return xOverlap * yOverlap
+}
+
+function findOverlapTarget(
+  nodes: MindmapNode[],
+  positions: Record<string, MindmapPoint>,
+  dropRect: NodeRect,
+  excludeId: string
+): string | null {
+  let bestId: string | null = null
+  let bestArea = 0
+  for (const node of nodes) {
+    if (node.node_id === excludeId) continue
+    const pos = positions[node.node_id]
+    if (!pos) continue
+    const area = overlapArea(dropRect, rectForPos(pos))
+    if (area > bestArea) {
+      bestArea = area
+      bestId = node.node_id
+    }
+  }
+  return bestArea > 0 ? bestId : null
 }
 
 function computeDepth(state: MindmapState, nodeId: string): number {
@@ -117,10 +150,19 @@ export function Mindmap(props: {
                 size={{ width: NODE_W, height: NODE_H }}
                 position={{ x: pos.x, y: pos.y }}
                 onDragStop={(_, data) => {
+                  const nextPos = { x: data.x, y: data.y }
                   props.sendClientMindmapAction({
                     type: 'set_node_pos',
                     node_id: node.node_id,
-                    pos: { x: data.x, y: data.y },
+                    pos: nextPos,
+                  })
+                  if (node.node_id === props.mindmapState.root_id) return
+                  const targetId = findOverlapTarget(nodes, positions, rectForPos(nextPos), node.node_id)
+                  if (!targetId || targetId === node.parent_id) return
+                  props.sendClientMindmapAction({
+                    type: 'reparent_node',
+                    node_id: node.node_id,
+                    new_parent_id: targetId,
                   })
                 }}
               >
@@ -159,6 +201,22 @@ export function Mindmap(props: {
                     >
                       Rename
                     </button>
+                    <button
+                      className="mgIconButton"
+                      title="Delete subtree"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const label =
+                          node.node_id === props.mindmapState.root_id
+                            ? 'Delete entire mindmap?'
+                            : 'Delete this node and all children?'
+                        if (!window.confirm(label)) return
+                        props.sendClientMindmapAction({ type: 'delete_subtree', node_id: node.node_id })
+                      }}
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
               </Rnd>
@@ -169,4 +227,3 @@ export function Mindmap(props: {
     </div>
   )
 }
-

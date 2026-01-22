@@ -1,5 +1,6 @@
 export type TranscriptEvent = {
   timestamp: string
+  event_id?: string
   speaker: string | null
   text: string
   confidence?: number | null
@@ -95,10 +96,8 @@ export type OutgoingMessage =
   | { type: 'transcript_event'; event: TranscriptEvent }
   | {
       type: 'set_session_context'
-      default_location: string
+      default_location?: string
       no_browse?: boolean
-      years?: number
-      month?: number
       mindmap_ai?: boolean
     }
   | { type: 'export_board' }
