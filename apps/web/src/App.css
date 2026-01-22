@@ -308,6 +308,14 @@
   flex: 1;
 }
 
+.mgMindmapBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+
 .mgMindmapCanvas {
   position: relative;
   flex: 1;
@@ -341,9 +349,19 @@
   cursor: grab;
 }
 
+.mgMindmapNode--selected {
+  border-color: rgba(47, 111, 237, 0.5);
+  box-shadow: 0 10px 22px rgba(47, 111, 237, 0.18);
+}
+
 .mgMindmapNode--collapsed {
   border-color: rgba(59, 130, 246, 0.25);
   background: rgba(59, 130, 246, 0.06);
+}
+
+.mgMindmapNode--collapsed.mgMindmapNode--selected {
+  border-color: rgba(47, 111, 237, 0.55);
+  box-shadow: 0 10px 22px rgba(47, 111, 237, 0.2);
 }
 
 .mgMindmapNodeText {
@@ -365,6 +383,61 @@
   padding: 6px 10px;
   border-radius: 999px;
   font-size: 12px;
+}
+
+.mgMindmapDetails {
+  width: 320px;
+  min-width: 260px;
+  max-width: 360px;
+  min-height: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.mgMindmapDetailsHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mgMindmapDetailsTitle {
+  font-weight: 600;
+  font-size: 14px;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.mgMindmapDetailsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mgMindmapSnippetList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mgMindmapSnippetList .mgTranscriptEntry {
+  margin-bottom: 0;
+}
+
+@media (max-width: 980px) {
+  .mgMindmapBody {
+    flex-direction: column;
+  }
+
+  .mgMindmapDetails {
+    width: 100%;
+    max-width: none;
+  }
 }
 
 .mgCanvas {

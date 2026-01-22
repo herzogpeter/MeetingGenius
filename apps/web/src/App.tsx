@@ -423,7 +423,11 @@ function App() {
               }}
             />
           ) : (
-            <Mindmap mindmapState={mindmapState} sendClientMindmapAction={sendClientMindmapAction} />
+            <Mindmap
+              mindmapState={mindmapState}
+              sendClientMindmapAction={sendClientMindmapAction}
+              transcript={transcript}
+            />
           )}
         </section>
       </main>

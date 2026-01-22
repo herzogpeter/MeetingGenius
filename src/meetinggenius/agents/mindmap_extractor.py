@@ -36,7 +36,16 @@ Your job:
 - Propose NEW mindmap paths that should exist based on what was said.
 - Keep it stable and low-noise: do not add nodes for incomplete/interim fragments.
 - Prefer reusing existing node text exactly when it matches an existing topic (avoid near-duplicates).
-- Each path should be short and readable (1–6 segments; each segment ideally 2–6 words).
+- Each path should be short and readable (1-6 segments; each segment ideally 2-6 words, max 8).
+
+Title quality rules:
+- Each segment must be understandable standalone and include a concrete, specific noun.
+- Rewrite transcript fragments into crisp summaries (<= 8 words) that stay faithful to what was said.
+- Forbid vague filler words ("things", "stuff", "concepts", "matters", "nice", etc.), pronouns-only
+  segments, or overly short fragments.
+- When applicable, route under meeting-native buckets: Decisions / Action Items / Open Questions /
+  Risks / Next Steps.
+- Prefer fewer, higher-quality paths over many low-quality ones.
 
 Rules:
 - Do NOT delete, merge, or reparent nodes.
@@ -55,4 +64,3 @@ def build_mindmap_extractor_agent(model: str) -> Agent[MindmapExtractorDeps, lis
     retries=2,
     defer_model_check=True,
   )
-

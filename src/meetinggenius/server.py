@@ -367,6 +367,39 @@ def _mindmap_find_any_node_by_exact_text(state: MindmapState, text: str) -> str 
   return None
 
 
+def _mindmap_find_any_node_by_similar_text(state: MindmapState, text: str) -> str | None:
+  wanted = _mindmap_normalize_text(text)
+  if not wanted:
+    return None
+
+  similarity_threshold = 0.88
+  category_ids = {node_id for node_id, _, _ in MEETING_NATIVE_MINDMAP_CATEGORIES}
+  best_id: str | None = None
+  best_score = 0.0
+
+  for node_id, node in state.nodes.items():
+    if node_id == state.root_id:
+      continue
+
+    if node_id in category_ids and _mindmap_normalize_text(node.text) != wanted:
+      continue
+
+    score = _title_similarity(node.text, text)
+    is_similar = _very_similar_title(node.text, text)
+    if score < similarity_threshold and not is_similar:
+      continue
+    if is_similar:
+      score = max(score, similarity_threshold)
+
+    if score > best_score:
+      best_id = node_id
+      best_score = score
+
+  if best_id is None:
+    return None
+  return best_id
+
+
 def _mindmap_auto_pos_for_child(state: MindmapState, *, parent_id: str, sibling_index: int) -> MindmapPoint:
   if parent_id == MINDMAP_ROOT_ID:
     base_y = 60.0 + len(MEETING_NATIVE_MINDMAP_CATEGORIES) * 150.0
@@ -736,7 +769,7 @@ def _apply_mindmap_path_proposals(
           continue
 
       if _mindmap_should_global_dedupe(seg):
-        global_match = _mindmap_find_any_node_by_exact_text(next_state, seg)
+        global_match = _mindmap_find_any_node_by_similar_text(next_state, seg)
         if global_match is not None:
           parent_id = global_match
           continue
